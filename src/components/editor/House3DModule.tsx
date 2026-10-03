@@ -158,7 +158,7 @@ export function House3DModule() {
     const scale=Math.min(820/Math.max(1,maxSX-minSX),500/Math.max(1,maxSY-minSY));
     const faces=raw.map(f=>({...f,points:f.points.map(q=>({x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale}))}));
     const setbackLine=offsetPolygonInward(plot.corners,setbackMm).map(point=>{const q=project(p(point.x,point.y,-foundationHeight+40));return {x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale};});
-    const labels=modelLevels.flatMap((floor,level)=>floor.rooms.map((room,index)=>{const q=project(p(room.x+room.width/2,room.y+room.height/2,floor.zBase+8));return{id:`${floor.id}-${room.id}`,name:`${floor.name} · ${room.name}`,color:index%FLOOR_COLORS.length,x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale};}));
+    const labels=modelLevels.flatMap(floor=>floor.rooms.map((room,index)=>{const q=project(p(room.x+room.width/2,room.y+room.height/2,floor.zBase+8));return{id:`${floor.id}-${room.id}`,name:`${floor.name} · ${room.name}`,color:index%FLOOR_COLORS.length,x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale};}));
     const siteCenter=project(p((Math.min(...plot.corners.map(c=>c.x))+Math.max(...plot.corners.map(c=>c.x)))/2,(Math.min(...plot.corners.map(c=>c.y))+Math.max(...plot.corners.map(c=>c.y)))/2,-foundationHeight));
     const edgeLabels=plot.corners.map((corner,index)=>{
       const next=plot.corners[(index+1)%plot.corners.length],midX=(corner.x+next.x)/2,midY=(corner.y+next.y)/2;

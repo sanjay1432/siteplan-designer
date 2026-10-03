@@ -55,6 +55,7 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
 
   // Label font size in screen pixels
   const labelFontSize = 12 * invZ;
+  const smallFontSize = 10 * invZ;
   const simpleDimension = (mm:number) => format(mm, {
     format: unitSystem === "metric" ? "meters" : "decimal_feet",
     decimals: 1,

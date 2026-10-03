@@ -469,7 +469,6 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     };
     const rectangle:[[number,number],[number,number],[number,number],[number,number]]=[[x,y],[x+width,y],[x+width,y+height],[x,y+height]];
     if(!rectangle.every(([px,py])=>pointInside(px,py)))return false;
-    const cross=(a:number[],b:number[],c:number[]) => (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
     // A plot boundary crossing the room rectangle means some of the room lies outside,
     // even when all four room corners happen to be inside a concave plot.
     for(let i=0;i<corners.length;i++){
