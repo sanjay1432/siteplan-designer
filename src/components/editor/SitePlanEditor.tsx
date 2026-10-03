@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { SiteCanvas } from "../canvas/SiteCanvas";
 import { Ruler } from "../ruler/Ruler";
 import { ViewportProvider } from "../../geometry/ViewportContext";
@@ -9,8 +10,10 @@ import { DimensionTester } from "../toolbar/DimensionTester";
 import { PlotPropertiesPanel } from "../properties/PlotPropertiesPanel";
 import { ProjectControls } from "../toolbar/ProjectControls";
 import { GettingStartedTour } from "./GettingStartedTour";
+import { House3DModule } from "./House3DModule";
 
 export function SitePlanEditor() {
+  const [activeModule,setActiveModule]=useState<"2d"|"3d">("2d");
   return (
     <UnitProvider>
       <PlotProvider>
@@ -28,22 +31,24 @@ export function SitePlanEditor() {
               </div>
 
               <ProjectControls />
+              <div className="flex rounded-md border border-slate-200 bg-slate-50 p-0.5" role="tablist" aria-label="Design module">
+                <button type="button" role="tab" aria-selected={activeModule==="2d"} onClick={()=>setActiveModule("2d")} className={`rounded px-2 py-1 text-xs font-medium ${activeModule==="2d"?"bg-white text-blue-700 shadow-sm":"text-slate-600 hover:text-slate-900"}`}>2D Plan</button>
+                <button type="button" role="tab" aria-selected={activeModule==="3d"} onClick={()=>setActiveModule("3d")} className={`rounded px-2 py-1 text-xs font-medium ${activeModule==="3d"?"bg-white text-blue-700 shadow-sm":"text-slate-600 hover:text-slate-900"}`}>3D House</button>
+              </div>
               <GettingStartedTour />
 
-              <div className="ml-auto flex items-center gap-2 sm:gap-3">
+              {activeModule==="2d" && <div className="ml-auto flex items-center gap-2 sm:gap-3">
                 <UnitSelector />
                 <div className="h-4 w-px bg-slate-200" />
                 <DimensionTester />
-              </div>
-
-              <ZoomControls />
+                <ZoomControls />
+              </div>}
               <p className="basis-full text-[10px] leading-tight text-slate-500" title="Projects are stored in this browser only. Clearing browser site data removes them.">
                 Autosaved in this browser. Clearing browser data can erase projects; export a JSON backup to keep them.
               </p>
             </div>
 
-            {/* Main content: rulers + canvas + properties panel */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden xl:flex-row">
+            {activeModule==="3d" ? <div className="min-h-0 flex-1"><House3DModule /></div> : <div className="flex min-h-0 flex-1 flex-col overflow-hidden xl:flex-row">
               {/* Left: ruler column + canvas rows */}
               <div className="flex min-h-[260px] min-w-0 flex-[0_0_55%] flex-col xl:min-h-0 xl:flex-1">
                 {/* Top ruler row */}
@@ -74,7 +79,7 @@ export function SitePlanEditor() {
               <div className="min-h-0 min-w-0 flex-1 xl:flex-initial xl:w-80 xl:shrink-0">
                 <PlotPropertiesPanel />
               </div>
-            </div>
+            </div>}
           </div>
         </ViewportProvider>
       </PlotProvider>

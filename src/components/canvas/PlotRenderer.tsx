@@ -3,6 +3,7 @@ import type { Viewport } from "../../geometry/viewport";
 import { midpoint } from "../../geometry/plot";
 import { useUnits } from "../../geometry/units/UnitContext";
 import { usePlot } from "../../geometry/plot/PlotContext";
+import { offsetPolygonInward } from "../../geometry/plot/setback";
 import type { PlanOpening, Room } from "../../geometry/plot/PlotContext";
 
 interface PlotRendererProps {
@@ -13,7 +14,7 @@ interface PlotRendererProps {
   ) => void;
   rooms: Room[];
   openings: PlanOpening[];
-  onOpeningClick: (id:string)=>void;
+  onOpeningPointerDown: (id:string,event:React.PointerEvent<SVGGElement>)=>void;
   onRoomPointerDown: (id: string, event: React.PointerEvent<SVGRectElement>) => void;
   onRoomResizePointerDown: (id: string, corner: number, event: React.PointerEvent<SVGCircleElement>) => void;
   selectedRoomId: string | null;
@@ -24,13 +25,17 @@ interface PlotRendererProps {
  * The parent <g> has the viewport transform applied, so all
  * coordinates here are canonical world-space millimetres.
  */
-export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, onOpeningClick, onRoomPointerDown, onRoomResizePointerDown, selectedRoomId }: PlotRendererProps) {
-  const { plot, selectedEdgeId, selectedCornerId, selectEdge, selectCorner } =
+export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, onOpeningPointerDown, onRoomPointerDown, onRoomResizePointerDown, selectedRoomId }: PlotRendererProps) {
+  const { plot, setbackMm, selectedEdgeId, selectedCornerId, selectEdge, selectCorner } =
     usePlot();
   const { format, unitSystem } = useUnits();
 
   const corners = plot.corners;
   const edges = plot.edges;
+  const plotCenter = corners.reduce(
+    (center, corner) => ({ x: center.x + corner.x / corners.length, y: center.y + corner.y / corners.length }),
+    { x: 0, y: 0 },
+  );
 
   if (corners.length < 3) return null;
 
@@ -38,6 +43,8 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
   const polygonPoints = corners
     .map((c) => `${c.x},${c.y}`)
     .join(" ");
+  const insetCorners=offsetPolygonInward(corners,setbackMm);
+  const setbackPoints=insetCorners.map(point=>`${point.x},${point.y}`).join(" ");
 
   // Inverse-scale helpers to keep labels/markers constant screen size
   const invZ = 1 / viewport.zoom;
@@ -48,7 +55,6 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
 
   // Label font size in screen pixels
   const labelFontSize = 12 * invZ;
-  const smallFontSize = 10 * invZ;
   const simpleDimension = (mm:number) => format(mm, {
     format: unitSystem === "metric" ? "meters" : "decimal_feet",
     decimals: 1,
@@ -111,6 +117,7 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
         fill="rgba(59, 130, 246, 0.08)"
         stroke="none"
       />
+      {setbackMm>0&&<polygon points={setbackPoints} fill="rgba(20,184,166,.035)" stroke="#0f766e" strokeWidth={2*invZ} strokeDasharray={`${7*invZ} ${5*invZ}`} strokeLinejoin="round" pointerEvents="none"><title>Setback · {format(setbackMm)} from each plot edge</title></polygon>}
 
       {/* ── Edge lines ── */}
       {rooms.map((room,index) => <g key={room.id} data-room="true">
@@ -124,6 +131,12 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
         <text x={room.x+room.width/2} y={room.y+room.height/2+9*invZ} textAnchor="middle" dominantBaseline="middle" fontSize={10*invZ} fill="#475569" style={{pointerEvents:"none",userSelect:"none"}}>{simpleDimension(room.width)} × {simpleDimension(room.height)}</text>
         {selectedRoomId===room.id && [[room.x,room.y],[room.x+room.width,room.y],[room.x+room.width,room.y+room.height],[room.x,room.y+room.height]].map(([cx,cy],corner)=><circle key={corner} cx={cx} cy={cy} r={5*invZ} fill="white" stroke="#047857" strokeWidth={1.5*invZ} style={{cursor:corner%2===0?"nwse-resize":"nesw-resize"}} onPointerDown={event=>onRoomResizePointerDown(room.id,corner,event)} onClick={event=>event.stopPropagation()}><title>Drag to resize {room.name}</title></circle>)}
       </g>)}
+      {setbackMm>0&&corners.map((corner,index)=>{
+        const next=corners[(index+1)%corners.length],innerStart=insetCorners[index],innerEnd=insetCorners[(index+1)%insetCorners.length];
+        const outerMid={x:(corner.x+next.x)/2,y:(corner.y+next.y)/2},innerMid={x:(innerStart.x+innerEnd.x)/2,y:(innerStart.y+innerEnd.y)/2};
+        const labelX=(outerMid.x+innerMid.x)/2,labelY=(outerMid.y+innerMid.y)/2;
+        return <g key={`setback-dimension-${index}`} pointerEvents="none"><line x1={outerMid.x} y1={outerMid.y} x2={innerMid.x} y2={innerMid.y} stroke="#0f766e" strokeWidth={1.25*invZ}/><circle cx={outerMid.x} cy={outerMid.y} r={2*invZ} fill="#0f766e"/><circle cx={innerMid.x} cy={innerMid.y} r={2*invZ} fill="#0f766e"/><rect x={labelX-48*invZ} y={labelY-9*invZ} width={96*invZ} height={18*invZ} rx={4*invZ} fill="white" fillOpacity={.96} stroke="#0f766e" strokeWidth={.8*invZ}/><text x={labelX} y={labelY+3*invZ} textAnchor="middle" fontSize={8.5*invZ} fontWeight="700" fill="#115e59"> {format(setbackMm)}</text></g>;
+      })}
       {openings.map(opening=>{
         const room=rooms.find(item=>item.id===opening.roomId);if(!room)return null;
         const s=opening.side,o=opening.offset,w=opening.width;
@@ -132,10 +145,11 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
         if(s==="bottom"){x1=room.x+o;y1=room.y+room.height;x2=x1+w;y2=y1;leafX=x1;leafY=y1-w;arc=`M ${x1} ${leafY} A ${w} ${w} 0 0 1 ${x2} ${y2}`;}
         if(s==="left"){x1=room.x;y1=room.y+o;x2=x1;y2=y1+w;leafX=x1+w;leafY=y1;arc=`M ${leafX} ${leafY} A ${w} ${w} 0 0 0 ${x2} ${y2}`;}
         if(s==="right"){x1=room.x+room.width;y1=room.y+o;x2=x1;y2=y1+w;leafX=x1-w;leafY=y1;arc=`M ${leafX} ${leafY} A ${w} ${w} 0 0 1 ${x2} ${y2}`;}
-        return <g key={opening.id} onClick={event=>{event.stopPropagation();onOpeningClick(opening.id);}} style={{cursor:"pointer"}}>
+        return <g key={opening.id} onPointerDown={event=>{event.stopPropagation();onOpeningPointerDown(opening.id,event);}} onClick={event=>{event.stopPropagation();}} style={{cursor:"grab"}}>
+          <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={18*invZ} style={{pointerEvents:"stroke",cursor:"grab"}} />
           <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="white" strokeWidth={5*invZ}/>
           {opening.type==="door" ? <><line x1={x1} y1={y1} x2={leafX} y2={leafY} stroke="#7c3aed" strokeWidth={1.5*invZ}/><path d={arc} fill="none" stroke="#8b5cf6" strokeWidth={1*invZ} strokeDasharray={`${3*invZ} ${2*invZ}`}/></> : <><line x1={x1+(s==="left"||s==="right"?3*invZ:0)} y1={y1+(s==="top"||s==="bottom"?3*invZ:0)} x2={x2+(s==="left"||s==="right"?3*invZ:0)} y2={y2+(s==="top"||s==="bottom"?3*invZ:0)} stroke="#0284c7" strokeWidth={2*invZ}/><line x1={x1-(s==="left"||s==="right"?3*invZ:0)} y1={y1-(s==="top"||s==="bottom"?3*invZ:0)} x2={x2-(s==="left"||s==="right"?3*invZ:0)} y2={y2-(s==="top"||s==="bottom"?3*invZ:0)} stroke="#0284c7" strokeWidth={2*invZ}/></>}
-          <title>{opening.type} — click to remove</title>
+          <title>{opening.type} — drag to any room wall; remove it in the room list</title>
         </g>;
       })}
       {edges.map((edge) => {
@@ -183,21 +197,25 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
         const [start, end] = getEdgeCorners(edge);
         const mid = midpoint(start, end);
 
-        // Determine outward direction per edge
-        // In screen-space Y increases downward
-        const outwardMap: Record<string, boolean> = {
-          "edge-top": false,    // label above
-          "edge-right": true,   // label right
-          "edge-bottom": true,  // label below
-          "edge-left": false,   // label left
-        };
-        const outward = outwardMap[edge.id] ?? true;
+        // Choose the perpendicular pointing away from the plot center so each
+        // edge, including top and bottom, is outlined consistently at any angle.
+        const midpointFromCenterX = mid.x - plotCenter.x;
+        const midpointFromCenterY = mid.y - plotCenter.y;
+        const outward = (end.y - start.y) * midpointFromCenterX -
+          (end.x - start.x) * midpointFromCenterY > 0;
         const offset = perpendicularOffset(start, end, dimLineOffset, outward);
 
         const labelX = mid.x + offset.nx;
         const labelY = mid.y + offset.ny;
+        // Keep dimension text parallel to its edge, while flipping the angle
+        // where needed so labels remain readable from left to right.
+        let angle = Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI;
+        if (angle > 90) angle -= 180;
+        if (angle < -90) angle += 180;
 
         const isSelected = edge.id === selectedEdgeId;
+        const dimensionText = format(edge.actualLengthMm);
+        const labelWidth = Math.max(56, dimensionText.length * 7.2 + 12) * invZ;
 
         return (
           <g key={`label-${edge.id}`}>
@@ -219,11 +237,12 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
               strokeWidth={1 * invZ}
             />
 
+            <g transform={`rotate(${angle} ${labelX} ${labelY})`}>
             {/* Dimension text background */}
             <rect
-              x={labelX - 28 * invZ}
+              x={labelX - labelWidth / 2}
               y={labelY - labelFontSize * 0.8}
-              width={56 * invZ}
+              width={labelWidth}
               height={labelFontSize * 1.6}
               rx={3 * invZ}
               fill={isSelected ? "#dbeafe" : "white"}
@@ -246,21 +265,9 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, o
                 selectEdge(edge.id === selectedEdgeId ? null : edge.id)
               }
             >
-              {format(edge.actualLengthMm)}
+              {dimensionText}
             </text>
-
-            {/* Edge name label (Top/Right/Bottom/Left) */}
-            <text
-              x={labelX}
-              y={labelY + labelFontSize * 0.33 + smallFontSize * 1.4}
-              textAnchor="middle"
-              fontSize={smallFontSize}
-              fontFamily="sans-serif"
-              fill={isSelected ? "#3b82f6" : "#94a3b8"}
-              style={{ userSelect: "none" }}
-            >
-              {edge.label}
-            </text>
+            </g>
           </g>
         );
       })}

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -22,6 +23,7 @@ import { usePlot } from "../../geometry/plot/PlotContext";
 import { Grid } from "./Grid";
 import { PlotRenderer } from "./PlotRenderer";
 import { exportCanvasPng, exportCanvasSvg, printCanvasPdf } from "../../lib/sitePlanExport";
+import { tryParseDimension } from "../../geometry/units/parser";
 
 export function SiteCanvas() {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -30,6 +32,7 @@ export function SiteCanvas() {
   const draggingRoomRef = useRef<{id:string; origin:Point; center:Point} | null>(null);
   const draggingPlanRef = useRef<Point|null>(null);
   const resizingRoomRef = useRef<{id:string; corner:number; room:{x:number;y:number;width:number;height:number}} | null>(null);
+  const draggingOpeningRef = useRef<string|null>(null);
 
   const {
     viewport,
@@ -38,22 +41,24 @@ export function SiteCanvas() {
     setCanvasSize,
   } = useViewport();
 
-  const { format } = useUnits();
-  const { plot, updateCornerPosition, rooms, openings, removeOpening, moveRoom, moveFloorPlan, resizeRoom, measurements, setMeasurements, activeProjectId, activeProjectName, compassRotation, rotateCompass, resetCompass } = usePlot();
+  const { format, unitSystem } = useUnits();
+  const { plot, updateCornerPosition, rooms, openings, moveOpening, moveRoom, moveFloorPlan, resizeRoom, measurements, setMeasurements, activeProjectId, activeProjectName, compassRotation, rotateCompass, resetCompass } = usePlot();
   const [measureMode, setMeasureMode] = useState(false);
   const measurementPastRef = useRef<Array<Array<{start:Point;end:Point}>>>([]);
   const measurementFutureRef = useRef<Array<Array<{start:Point;end:Point}>>>([]);
   const [pendingMeasure, setPendingMeasure] = useState<Point|null>(null);
+  const [measureLength, setMeasureLength] = useState("");
+  const [selectedMeasurement, setSelectedMeasurement] = useState<number|null>(null);
   const [moveAxis, setMoveAxis] = useState<"free"|"x"|"y">("free");
   const [moveWholePlan, setMoveWholePlan] = useState(false);
   const [selectedRoomId, setSelectedRoomId] = useState<string|null>(null);
   const [exportMenuOpen,setExportMenuOpen]=useState(false);
   const [exportNotice,setExportNotice]=useState("");
-  const updateMeasurements = (update:(current:Array<{start:Point;end:Point}>)=>Array<{start:Point;end:Point}>) => setMeasurements(current=>{
+  const updateMeasurements = useCallback((update:(current:Array<{start:Point;end:Point}>)=>Array<{start:Point;end:Point}>) => setMeasurements(current=>{
     measurementPastRef.current=[...measurementPastRef.current.slice(-99),current];
     measurementFutureRef.current=[];
     return update(current);
-  });
+  }),[setMeasurements]);
   const undoMeasurement = () => {
     const previous=measurementPastRef.current.pop();if(!previous)return;
     setMeasurements(current=>{measurementFutureRef.current=[current,...measurementFutureRef.current];return previous;});
@@ -166,14 +171,15 @@ export function SiteCanvas() {
 
   const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     const cornerId = draggingCornerRef.current;
-    if (!cornerId && !draggingRoomRef.current && !resizingRoomRef.current && !draggingPlanRef.current) return;
+    if (!cornerId && !draggingRoomRef.current && !resizingRoomRef.current && !draggingPlanRef.current && !draggingOpeningRef.current) return;
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
     const point = screenToWorld(
         { x: event.clientX - rect.left, y: event.clientY - rect.top },
         viewport,
       );
-    if (cornerId) updateCornerPosition(cornerId, point);
+    if (draggingOpeningRef.current) moveOpening(draggingOpeningRef.current,point);
+    else if (cornerId) updateCornerPosition(cornerId, point);
     else if(draggingPlanRef.current) {
       const previous=draggingPlanRef.current;
       moveFloorPlan({x:moveAxis==="y"?0:point.x-previous.x,y:moveAxis==="x"?0:point.y-previous.y});
@@ -197,12 +203,28 @@ export function SiteCanvas() {
     draggingRoomRef.current = null;
     draggingPlanRef.current = null;
     resizingRoomRef.current = null;
+    draggingOpeningRef.current = null;
   };
 
   const pointFromPointer = (event: { clientX: number; clientY: number }) => {
     const rect=svgRef.current?.getBoundingClientRect();
     return rect ? screenToWorld({x:event.clientX-rect.left,y:event.clientY-rect.top},viewport) : null;
   };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedMeasurement !== null) {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("input,textarea,select,[contenteditable=true]")) return;
+        event.preventDefault();
+        updateMeasurements(lines => lines.filter((_, index) => index !== selectedMeasurement));
+        setSelectedMeasurement(null);
+      }
+      if (event.key === "Escape" && measureMode) { setMeasureMode(false); setPendingMeasure(null); }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedMeasurement, measureMode, updateMeasurements]);
 
   // Show plot name if it exists
   const hasPlot = plot.corners.length > 0;
@@ -231,7 +253,14 @@ export function SiteCanvas() {
           if (!measureMode) return;
           const point=pointFromPointer(event); if(!point) return;
           if(!pendingMeasure) setPendingMeasure(point);
-          else { updateMeasurements(lines=>[...lines,{start:pendingMeasure,end:point}]); setPendingMeasure(null); setMeasureMode(false); }
+          else {
+            const parsed = measureLength.trim() ? tryParseDimension(measureLength, unitSystem === "metric" ? "m" : "ft") : null;
+            if (parsed && (!parsed.success || parsed.mm <= 0)) return;
+            const dx=point.x-pendingMeasure.x,dy=point.y-pendingMeasure.y,raw=Math.hypot(dx,dy);
+            const length=parsed?.success ? parsed.mm : raw;
+            if (raw > 0 && length > 0) updateMeasurements(lines=>[...lines,{start:pendingMeasure,end:{x:pendingMeasure.x+dx/raw*length,y:pendingMeasure.y+dy/raw*length}}]);
+            setPendingMeasure(null); setMeasureMode(false); setMeasureLength("");
+          }
         }}
       >
         <g
@@ -248,7 +277,7 @@ export function SiteCanvas() {
               onCornerPointerDown={handleCornerPointerDown}
               rooms={rooms}
               openings={openings}
-              onOpeningClick={removeOpening}
+              onOpeningPointerDown={(id,event)=>{event.preventDefault();draggingOpeningRef.current=id;svgRef.current?.setPointerCapture(event.pointerId);}}
               selectedRoomId={selectedRoomId}
               onRoomPointerDown={(id,event) => {
                 event.preventDefault();
@@ -270,8 +299,14 @@ export function SiteCanvas() {
           )}
           {measurements.map((line,i)=>{
             const x=(line.start.x+line.end.x)/2,y=(line.start.y+line.end.y)/2;
-            return <g key={i} pointerEvents="none"><line x1={line.start.x} y1={line.start.y} x2={line.end.x} y2={line.end.y} stroke="#d97706" strokeWidth={2/viewport.zoom} strokeDasharray={`${6/viewport.zoom} ${3/viewport.zoom}`} /><rect x={x-42/viewport.zoom} y={y-11/viewport.zoom} width={84/viewport.zoom} height={22/viewport.zoom} rx={4/viewport.zoom} fill="white" stroke="#f59e0b" strokeWidth={1/viewport.zoom}/><text x={x} y={y+4/viewport.zoom} textAnchor="middle" fontSize={12/viewport.zoom} fill="#92400e">{format(Math.hypot(line.end.x-line.start.x,line.end.y-line.start.y))}</text></g>;
+            return <g key={i} onClick={event=>{event.stopPropagation();setSelectedMeasurement(i);}} style={{cursor:"pointer"}}>
+              <line x1={line.start.x} y1={line.start.y} x2={line.end.x} y2={line.end.y} stroke="transparent" strokeWidth={14/viewport.zoom} />
+              <line pointerEvents="none" x1={line.start.x} y1={line.start.y} x2={line.end.x} y2={line.end.y} stroke={selectedMeasurement===i?"#b45309":"#d97706"} strokeWidth={(selectedMeasurement===i?3:2)/viewport.zoom} strokeDasharray={`${6/viewport.zoom} ${3/viewport.zoom}`} />
+              <rect pointerEvents="none" x={x-42/viewport.zoom} y={y-11/viewport.zoom} width={84/viewport.zoom} height={22/viewport.zoom} rx={4/viewport.zoom} fill="white" stroke={selectedMeasurement===i?"#b45309":"#f59e0b"} strokeWidth={1/viewport.zoom}/>
+              <text pointerEvents="none" x={x} y={y+4/viewport.zoom} textAnchor="middle" fontSize={12/viewport.zoom} fill="#92400e">{format(Math.hypot(line.end.x-line.start.x,line.end.y-line.start.y))}</text>
+            </g>;
           })}
+          {measureMode && pendingMeasure && <g pointerEvents="none"><line x1={pendingMeasure.x} y1={pendingMeasure.y} x2={cursorWorld.x} y2={cursorWorld.y} stroke="#d97706" strokeWidth={2/viewport.zoom} strokeDasharray={`${6/viewport.zoom} ${3/viewport.zoom}`} /><rect x={(pendingMeasure.x+cursorWorld.x)/2-42/viewport.zoom} y={(pendingMeasure.y+cursorWorld.y)/2-11/viewport.zoom} width={84/viewport.zoom} height={22/viewport.zoom} rx={4/viewport.zoom} fill="white" stroke="#f59e0b" strokeWidth={1/viewport.zoom}/><text x={(pendingMeasure.x+cursorWorld.x)/2} y={(pendingMeasure.y+cursorWorld.y)/2+4/viewport.zoom} textAnchor="middle" fontSize={12/viewport.zoom} fill="#92400e">{format(Math.hypot(cursorWorld.x-pendingMeasure.x,cursorWorld.y-pendingMeasure.y))}</text></g>}
           {pendingMeasure && <circle cx={pendingMeasure.x} cy={pendingMeasure.y} r={6/viewport.zoom} fill="#f59e0b"/>}
         </g>
         <g transform={`translate(${Math.max(42,canvasSize.width-42)} 122)`} aria-label={`Compass, north rotated ${compassRotation} degrees`}>
@@ -287,9 +322,10 @@ export function SiteCanvas() {
 
       {/* Zoom indicator */}
       <div className="absolute left-2 right-auto top-2 z-10 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-sm sm:left-4 sm:top-4">
-        <button type="button" onClick={() => {setMeasureMode(v=>!v);setPendingMeasure(null);}} className={`rounded px-2 py-1.5 text-xs font-medium ${measureMode ? "bg-amber-50 text-amber-800" : "text-slate-700 hover:bg-slate-50"}`}>
+        <button type="button" onClick={() => {setMeasureMode(v=>!v);setPendingMeasure(null);setSelectedMeasurement(null);}} className={`rounded px-2 py-1.5 text-xs font-medium ${measureMode ? "bg-amber-50 text-amber-800" : "text-slate-700 hover:bg-slate-50"}`}>
           {measureMode ? (pendingMeasure ? "Click second point…" : "Click first point…") : "Measure"}
         </button>
+        {measureMode && <label className="flex items-center gap-1 border-l border-slate-200 pl-2 text-[10px] text-slate-500">Length <input aria-label="Exact line length" value={measureLength} onChange={event=>setMeasureLength(event.target.value)} placeholder={`free · ${unitSystem === "metric" ? "m" : "ft"}`} className="w-20 rounded border border-slate-200 px-1.5 py-1 font-mono text-xs text-slate-800" /></label>}
         <span className="mx-1 h-4 w-px bg-slate-200" />
         {([["free","Free"],["x","X only"],["y","Y only"]] as const).map(([axis,label])=><button key={axis} type="button" onClick={()=>{setMoveAxis(axis);setMoveWholePlan(false);}} className={`rounded px-2 py-1.5 text-[11px] ${moveAxis===axis&&!moveWholePlan?"bg-slate-800 text-white":"text-slate-600 hover:bg-slate-100"}`} title={`Move rooms on ${axis === "free" ? "both axes" : `${axis.toUpperCase()} axis only`}`}>{label}</button>)}
         <button type="button" onClick={()=>setMoveWholePlan(v=>!v)} className={`rounded px-2 py-1.5 text-[11px] ${moveWholePlan?"bg-emerald-700 text-white":"text-slate-600 hover:bg-slate-100"}`} title="Drag any room to move the entire floor plan">Whole plan</button>
@@ -297,6 +333,7 @@ export function SiteCanvas() {
       {(measurements.length > 0 || measurementPastRef.current.length > 0 || measurementFutureRef.current.length > 0) && <div className="absolute left-2 top-20 z-10 flex items-center gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-sm sm:left-4 sm:top-16">
         <button type="button" onClick={undoMeasurement} disabled={!measurementPastRef.current.length} className="rounded px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 disabled:opacity-40">Undo line</button>
         <button type="button" onClick={redoMeasurement} disabled={!measurementFutureRef.current.length} className="rounded px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 disabled:opacity-40">Redo line</button>
+        <button type="button" onClick={()=>{if(selectedMeasurement===null)return;updateMeasurements(lines=>lines.filter((_,index)=>index!==selectedMeasurement));setSelectedMeasurement(null);}} disabled={selectedMeasurement===null} className="rounded px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-40">Remove selected</button>
         <button type="button" onClick={()=>updateMeasurements(()=>[])} disabled={!measurements.length} className="rounded px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-40">Clear lines</button>
       </div>}
       <div className="absolute right-2 top-2 z-10 flex max-w-[calc(100%-1rem)] flex-nowrap items-center justify-end gap-0.5 rounded-md border border-slate-200 bg-white/95 p-1 shadow-sm sm:right-4 sm:top-4">
@@ -307,9 +344,10 @@ export function SiteCanvas() {
       </div>
       <div className="absolute right-2 top-11 z-10 sm:right-4 sm:top-[3.25rem]">
         <button type="button" onClick={()=>setExportMenuOpen(v=>!v)} className="rounded-md border border-slate-200 bg-white/95 px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-white">Export plan</button>
-        {exportMenuOpen && <div className="absolute right-0 top-9 flex min-w-36 flex-col rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
-          <button type="button" onClick={()=>{if(svgRef.current)exportCanvasPng(svgRef.current,activeProjectName);setExportMenuOpen(false);}} className="rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50">Download PNG</button>
-          <button type="button" onClick={()=>{if(svgRef.current)exportCanvasSvg(svgRef.current,activeProjectName);setExportMenuOpen(false);}} className="rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50">Download SVG</button>
+        {exportMenuOpen && <div className="absolute right-0 top-9 flex min-w-48 flex-col rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+          <p className="px-2 py-1 text-[10px] text-slate-500">Exports the plot and floor plan together.</p>
+          <button type="button" onClick={()=>{if(svgRef.current)exportCanvasPng(svgRef.current,activeProjectName);setExportMenuOpen(false);}} className="rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50">Download plan image (PNG)</button>
+          <button type="button" onClick={()=>{if(svgRef.current)exportCanvasSvg(svgRef.current,activeProjectName);setExportMenuOpen(false);}} className="rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50">Download vector image (SVG)</button>
           <button type="button" onClick={()=>{if(svgRef.current&&!printCanvasPdf(svgRef.current))setExportNotice("Allow pop-ups to print or save as PDF.");else setExportNotice("");setExportMenuOpen(false);}} className="rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50">Print / Save PDF</button>
         </div>}
       </div>
