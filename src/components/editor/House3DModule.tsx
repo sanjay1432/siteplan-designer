@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlot } from "../../geometry/plot/PlotContext";
 import { useUnits } from "../../geometry/units/UnitContext";
-import { offsetPolygonInward } from "../../geometry/plot/setback";
+import { rectangularSetback } from "../../geometry/plot/setback";
 
 type Point3 = { x: number; y: number; z: number };
 type Point2 = { x: number; y: number };
@@ -12,7 +12,7 @@ const FLOOR_COLORS = ["#e9d9bd", "#cbdccf", "#d5dce8", "#e6d4cd", "#d9d0e5"];
 
 /** Separate isometric viewer generated from the active 2D room plan. */
 export function House3DModule() {
-  const { rooms, openings, building, plot, compassRotation, floorPlans, groundLevel, setbackMm } = usePlot();
+  const { rooms, openings, building, plot, compassRotation, floorPlans, groundLevel, setbackDistances } = usePlot();
   const { format } = useUnits();
   const [wallHeightFt, setWallHeightFt] = useState(10);
   const [foundationDepthFt, setFoundationDepthFt] = useState(1.5);
@@ -157,7 +157,7 @@ export function House3DModule() {
     const coords=raw.flatMap(f=>f.points),minSX=Math.min(...coords.map(q=>q.x)),maxSX=Math.max(...coords.map(q=>q.x)),minSY=Math.min(...coords.map(q=>q.y)),maxSY=Math.max(...coords.map(q=>q.y));
     const scale=Math.min(820/Math.max(1,maxSX-minSX),500/Math.max(1,maxSY-minSY));
     const faces=raw.map(f=>({...f,points:f.points.map(q=>({x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale}))}));
-    const setbackLine=offsetPolygonInward(plot.corners,setbackMm).map(point=>{const q=project(p(point.x,point.y,-foundationHeight+40));return {x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale};});
+    const setbackLine=rectangularSetback(plot.corners,setbackDistances).map(point=>{const q=project(p(point.x,point.y,-foundationHeight+40));return {x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale};});
     const labels=modelLevels.flatMap(floor=>floor.rooms.map((room,index)=>{const q=project(p(room.x+room.width/2,room.y+room.height/2,floor.zBase+8));return{id:`${floor.id}-${room.id}`,name:`${floor.name} · ${room.name}`,color:index%FLOOR_COLORS.length,x:480+(q.x-(minSX+maxSX)/2)*scale,y:310+(q.y-(minSY+maxSY)/2)*scale};}));
     const siteCenter=project(p((Math.min(...plot.corners.map(c=>c.x))+Math.max(...plot.corners.map(c=>c.x)))/2,(Math.min(...plot.corners.map(c=>c.y))+Math.max(...plot.corners.map(c=>c.y)))/2,-foundationHeight));
     const edgeLabels=plot.corners.map((corner,index)=>{
@@ -176,7 +176,7 @@ export function House3DModule() {
       return {id:index,x:480+(projected.x-(minSX+maxSX)/2)*scale,y:310+(projected.y-(minSY+maxSY)/2)*scale,text:`${direction} · ${format(Math.hypot(dx,dy))}`};
     });
     return {faces,labels,edgeLabels,setbackLine,stiltLabel:{x:480+(stiltLabel.x-(minSX+maxSX)/2)*scale,y:310+(stiltLabel.y-(minSY+maxSY)/2)*scale},siteLabel:{x:480+(siteCenter.x-(minSX+maxSX)/2)*scale,y:310+(siteCenter.y-(minSY+maxSY)/2)*scale},hasRooms:allRooms.length>0,pillarCount:pillarPoints.length,totalPillars:allPillarPoints.length,removedCount:removedPoints.length,leanDegrees};
-  },[angle,compassRotation,elevation,format,floorCount,foundationHeight,modelLevels,pillarLayout,pillarSpacing,plan,plot.corners,allRooms,removedPillarIds,selectedPillarId,showRoof,stiltHeight,wallHeight,setbackMm]);
+  },[angle,compassRotation,elevation,format,floorCount,foundationHeight,modelLevels,pillarLayout,pillarSpacing,plan,plot.corners,allRooms,removedPillarIds,selectedPillarId,showRoof,stiltHeight,wallHeight,setbackDistances]);
 
   const onDragStart=(event:React.PointerEvent<SVGSVGElement>)=>{
     if(event.button!==0)return;
@@ -230,7 +230,7 @@ export function House3DModule() {
         <style>{`@keyframes house-arrive{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}`}</style>
         <ellipse cx="480" cy="553" rx="340" ry="34" fill="#64748b" opacity=".12" />
         <g filter="url(#model-shadow)" style={{animation:"house-arrive 800ms cubic-bezier(.2,.75,.25,1) both"}}>{model.faces.map(face=><polygon key={face.key} points={face.points.map(p=>`${p.x},${p.y}`).join(" ")} fill={face.key==="foundation-top"?"url(#plinth)":face.fill} fillOpacity={face.opacity} stroke={face.stroke} strokeWidth={face.pillarId===selectedPillarId?2.2:1.25} strokeLinejoin="round" vectorEffect="non-scaling-stroke" style={face.pillarId?{cursor:"pointer"}:undefined} onPointerDown={face.pillarId?event=>event.stopPropagation():undefined} onClick={face.pillarId?event=>{event.stopPropagation();setSelectedPillarId(face.pillarId!);}:undefined}><title>{face.pillarId?`Pillar ${face.pillarId.replaceAll("-"," ")} — click to select`:""}</title></polygon>)}</g>
-        {setbackMm>0&&<polyline points={[...model.setbackLine,model.setbackLine[0]].map(point=>`${point.x},${point.y}`).join(" ")} fill="none" stroke="#0f766e" strokeWidth="2.5" strokeDasharray="7 5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" pointerEvents="none"><title>Setback · {format(setbackMm)} inside the plot boundary</title></polyline>}
+        {Object.values(setbackDistances).some(distance=>distance>0)&&<polyline points={[...model.setbackLine,model.setbackLine[0]].map(point=>`${point.x},${point.y}`).join(" ")} fill="none" stroke="#0f766e" strokeWidth="2.5" strokeDasharray="7 5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" pointerEvents="none"><title>Independent plot setbacks</title></polyline>}
         {!showRoof&&model.labels.map(label=><text key={label.id} x={label.x} y={label.y} textAnchor="middle" dominantBaseline="middle" fill="#39454e" fontSize="11" fontWeight="600" paintOrder="stroke" stroke="#fff" strokeWidth="3" strokeOpacity=".72" pointerEvents="none">{label.name.length>18?`${label.name.slice(0,17)}…`:label.name}</text>)}
         {model.edgeLabels.map(label=><g key={`dimension-${label.id}`} pointerEvents="none"><rect x={label.x-39} y={label.y-10} width="78" height="20" rx="7" fill="#fff" fillOpacity=".94" stroke="#52715a" strokeWidth="1"/><text x={label.x} y={label.y+3.5} textAnchor="middle" fill="#294632" fontSize="10" fontWeight="700">{label.text}</text></g>)}
         <text x={model.siteLabel.x} y={model.siteLabel.y+15} textAnchor="middle" dominantBaseline="middle" fill="#36523b" fontSize="11" fontWeight="700" letterSpacing="1.2" paintOrder="stroke" stroke="#e7efe4" strokeWidth="4" strokeOpacity=".85" pointerEvents="none">PLOT BOUNDARY</text>

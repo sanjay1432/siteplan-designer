@@ -24,6 +24,7 @@ import { Grid } from "./Grid";
 import { PlotRenderer } from "./PlotRenderer";
 import { exportCanvasPng, exportCanvasSvg, printCanvasPdf } from "../../lib/sitePlanExport";
 import { tryParseDimension } from "../../geometry/units/parser";
+import type { PlotEdgeName } from "../../types/plot";
 
 export function SiteCanvas() {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -33,6 +34,9 @@ export function SiteCanvas() {
   const draggingPlanRef = useRef<Point|null>(null);
   const resizingRoomRef = useRef<{id:string; corner:number; room:{x:number;y:number;width:number;height:number}} | null>(null);
   const draggingOpeningRef = useRef<string|null>(null);
+  const draggingPlanObjectRef=useRef<{id:string;offset:Point}|null>(null);
+  const draggingSetbackRef=useRef<{corner:number;origin:Point;starts:Record<PlotEdgeName,number>}|null>(null);
+  const draggingSiteFeatureRef=useRef<{id:string;offset:Point}|null>(null);
 
   const {
     viewport,
@@ -42,7 +46,7 @@ export function SiteCanvas() {
   } = useViewport();
 
   const { format, unitSystem } = useUnits();
-  const { plot, updateCornerPosition, rooms, openings, moveOpening, moveRoom, moveFloorPlan, resizeRoom, measurements, setMeasurements, activeProjectId, activeProjectName, compassRotation, rotateCompass, resetCompass } = usePlot();
+  const { plot, updateCornerPosition, rooms, openings, planObjects, movePlanObject, siteFeatures, moveSiteFeature, selectSiteFeature, moveOpening, moveRoom, moveFloorPlan, resizeRoom, measurements, setMeasurements, activeProjectId, activeProjectName, compassRotation, rotateCompass, resetCompass, setbackDistances, setSetbackDistances, selectPropertyCard, selectCorner, selectedSiteFeatureId } = usePlot();
   const [measureMode, setMeasureMode] = useState(false);
   const measurementPastRef = useRef<Array<Array<{start:Point;end:Point}>>>([]);
   const measurementFutureRef = useRef<Array<Array<{start:Point;end:Point}>>>([]);
@@ -165,20 +169,30 @@ export function SiteCanvas() {
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    selectCorner(cornerId);
     draggingCornerRef.current = cornerId;
     svgRef.current?.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     const cornerId = draggingCornerRef.current;
-    if (!cornerId && !draggingRoomRef.current && !resizingRoomRef.current && !draggingPlanRef.current && !draggingOpeningRef.current) return;
+    if (!cornerId && !draggingRoomRef.current && !resizingRoomRef.current && !draggingPlanRef.current && !draggingOpeningRef.current && !draggingSetbackRef.current && !draggingSiteFeatureRef.current && !draggingPlanObjectRef.current) return;
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
     const point = screenToWorld(
         { x: event.clientX - rect.left, y: event.clientY - rect.top },
         viewport,
       );
-    if (draggingOpeningRef.current) moveOpening(draggingOpeningRef.current,point);
+    if(draggingSiteFeatureRef.current){const drag=draggingSiteFeatureRef.current;moveSiteFeature(drag.id,{x:point.x+drag.offset.x,y:point.y+drag.offset.y});}
+    else if(draggingPlanObjectRef.current){const drag=draggingPlanObjectRef.current;movePlanObject(drag.id,{x:point.x+drag.offset.x,y:point.y+drag.offset.y});}
+    else if(draggingSetbackRef.current){const drag=draggingSetbackRef.current,dx=point.x-drag.origin.x,dy=point.y-drag.origin.y,next={...drag.starts};
+      if(drag.corner===0){next.left=Math.max(0,drag.starts.left+dx);next.top=Math.max(0,drag.starts.top+dy);}
+      if(drag.corner===1){next.right=Math.max(0,drag.starts.right-dx);next.top=Math.max(0,drag.starts.top+dy);}
+      if(drag.corner===2){next.right=Math.max(0,drag.starts.right-dx);next.bottom=Math.max(0,drag.starts.bottom-dy);}
+      if(drag.corner===3){next.left=Math.max(0,drag.starts.left+dx);next.bottom=Math.max(0,drag.starts.bottom-dy);}
+      setSetbackDistances(next);
+    }
+    else if (draggingOpeningRef.current) moveOpening(draggingOpeningRef.current,point);
     else if (cornerId) updateCornerPosition(cornerId, point);
     else if(draggingPlanRef.current) {
       const previous=draggingPlanRef.current;
@@ -204,6 +218,9 @@ export function SiteCanvas() {
     draggingPlanRef.current = null;
     resizingRoomRef.current = null;
     draggingOpeningRef.current = null;
+    draggingPlanObjectRef.current=null;
+    draggingSetbackRef.current=null;
+    draggingSiteFeatureRef.current=null;
   };
 
   const pointFromPointer = (event: { clientX: number; clientY: number }) => {
@@ -232,6 +249,7 @@ export function SiteCanvas() {
   return (
     <div className="relative h-full w-full overflow-hidden bg-slate-100">
       <svg
+        id="site-plan-canvas"
         ref={svgRef}
         width="100%"
         height="100%"
@@ -239,7 +257,7 @@ export function SiteCanvas() {
         onWheel={handleWheel}
         onPointerMove={handlePointerMove}
         onPointerDown={(event) => {
-          if (!(event.target as Element).closest("[data-room]")) setSelectedRoomId(null);
+          if (!(event.target as Element).closest("[data-room]")) {setSelectedRoomId(null);selectPropertyCard(null);}
         }}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
@@ -277,12 +295,29 @@ export function SiteCanvas() {
               onCornerPointerDown={handleCornerPointerDown}
               rooms={rooms}
               openings={openings}
-              onOpeningPointerDown={(id,event)=>{event.preventDefault();draggingOpeningRef.current=id;svgRef.current?.setPointerCapture(event.pointerId);}}
+              planObjects={planObjects}
+              siteFeatures={siteFeatures}
+              selectedSiteFeatureId={selectedSiteFeatureId}
+              onOpeningPointerDown={(id,event)=>{event.preventDefault();selectPropertyCard(`opening-${id}`);draggingOpeningRef.current=id;svgRef.current?.setPointerCapture(event.pointerId);}}
+              onPlanObjectPointerDown={(id,event)=>{event.preventDefault();event.stopPropagation();const item=planObjects.find(object=>object.id===id),origin=pointFromPointer(event);if(!item||!origin)return;selectPropertyCard(`plan-object-${id}`);draggingPlanObjectRef.current={id,offset:{x:item.x-origin.x,y:item.y-origin.y}};svgRef.current?.setPointerCapture(event.pointerId);}}
+              onSiteFeaturePointerDown={(id,event)=>{
+                event.preventDefault();event.stopPropagation();setSelectedRoomId(null);
+                const feature=siteFeatures.find(item=>item.id===id),origin=pointFromPointer(event);if(!feature||!origin)return;
+                selectSiteFeature(id);draggingSiteFeatureRef.current={id,offset:{x:feature.x+feature.width/2-origin.x,y:feature.y+feature.height/2-origin.y}};svgRef.current?.setPointerCapture(event.pointerId);
+              }}
+              onSetbackPointerDown={(corner,event)=>{
+                event.preventDefault();event.stopPropagation();
+                const origin=pointFromPointer(event);if(!origin)return;
+                const edge=(['top','right','bottom','left'] as PlotEdgeName[])[corner];
+                draggingSetbackRef.current={corner,origin,starts:{...setbackDistances}};
+                selectPropertyCard(`setback-${edge}`);svgRef.current?.setPointerCapture(event.pointerId);
+              }}
               selectedRoomId={selectedRoomId}
               onRoomPointerDown={(id,event) => {
                 event.preventDefault();
                 event.stopPropagation();
                 setSelectedRoomId(id);
+                selectPropertyCard(`room-${id}`);
                 const room=rooms.find(item=>item.id===id);const origin=pointFromPointer(event);
                 if(!room||!origin)return;
                 if(moveWholePlan) draggingPlanRef.current=origin;

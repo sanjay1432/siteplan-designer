@@ -23,17 +23,12 @@ import {
   DEFAULT_PLOT_DIMENSIONS_MM,
   distance,
 } from "../plot";
-import { offsetPolygonInward } from "./setback";
-
-export type RoomKind = "room" | "stairs";
-export type WallSide = "top" | "right" | "bottom" | "left";
-export interface Room { id: string; name: string; x: number; y: number; width: number; height: number; kind?: RoomKind }
-export interface PlanOpening { id:string; roomId:string; type:"door"|"window"; side:WallSide; offset:number; width:number }
-export interface FloorPlanLevel { id:string; name:string; rooms:Room[]; openings:PlanOpening[] }
-export type FloorPlanPreset = "1bhk" | "2bhk" | "3bhk";
-export interface MeasurementLine { start:Point; end:Point }
-export interface PlotGeometry { corners:PlotCorner[]; building?:{x:number;y:number;width:number;height:number}; setbackMm?:number; rooms?:Room[]; openings?:PlanOpening[]; groundPlan?:FloorPlanLevel; floors?:FloorPlanLevel[]; activeFloorId?:string }
-export interface SavedProject { id:string; name:string; geometry:PlotGeometry; measurements:MeasurementLine[]; compassRotation:number }
+import { rectangularSetback } from "./setback";
+import { validateBoundary } from "./boundary";
+import { createProjectCollectionDocument, createProjectDocument, getAttachedRoomWallSegments, getRoomWallInset, isProjectCollectionDocumentV2, isProjectDocumentV1, isProjectDocumentV2, savedProjectFromDocumentV2 } from "./model";
+import type { FloorPlanLevel, FloorPlanPreset, MeasurementLine, PlanObject, PlanObjectKind, PlanOpening, PlotGeometry, ProjectAssumption, ProjectCollectionDocumentV2, ProjectDetails, ProjectIssue, Room, RoomKind, SavedProject, SiteFeature, SiteFeatureKind, SurveyMetadata, WallSide } from "./model";
+export { DEFAULT_EXTERIOR_WALL_THICKNESS_MM, DEFAULT_INTERIOR_WALL_THICKNESS_MM, getAttachedRoomWall, getAttachedRoomWallSegments, getRoomWallInset, getRoomWallSegments, getRoomWallThickness } from "./model";
+export type { FloorPlanLevel, FloorPlanPreset, MeasurementLine, PlanObject, PlanObjectKind, PlanOpening, PlotGeometry, ProjectAssumption, ProjectCollectionDocumentV2, ProjectDetails, ProjectDocumentV1, ProjectDocumentV2, ProjectIssue, Room, RoomKind, SavedProject, SiteFeature, SiteFeatureKind, SiteFeatureStatus, SurveyMetadata, WallSide } from "./model";
 
 const EXPORT_FORMAT = "siteplan-designer-project";
 
@@ -43,9 +38,20 @@ interface PlotContextValue {
   metrics: PlotMetrics;
   building: { x: number; y: number; width: number; height: number };
   setbackMm:number;
+  setbackDistances:Record<PlotEdgeName,number>;
+  setSetbackDistance:(edge:PlotEdgeName,distance:number)=>boolean;
+  setSetbackDistances:(distances:Record<PlotEdgeName,number>)=>boolean;
   setSetbackMm:(distance:number)=>boolean;
   rooms: Room[];
+  siteFeatures:SiteFeature[];
+  selectedSiteFeatureId:string|null;
+  selectSiteFeature:(id:string|null)=>void;
+  addSiteFeature:(kind:SiteFeatureKind)=>boolean;
+  updateSiteFeature:(id:string,changes:Partial<Omit<SiteFeature,"id"|"kind">>)=>boolean;
+  moveSiteFeature:(id:string,center:Point)=>boolean;
+  removeSiteFeature:(id:string)=>void;
   openings: PlanOpening[];
+  planObjects:PlanObject[];
   floorPlans:FloorPlanLevel[];
   groundLevel:FloorPlanLevel;
   activeFloorId:string;
@@ -63,6 +69,14 @@ interface PlotContextValue {
   projects:SavedProject[];
   activeProjectId:string;
   activeProjectName:string;
+  projectDetails:ProjectDetails;
+  updateProjectDetails:(details:Partial<ProjectDetails>)=>void;
+  assumptions:ProjectAssumption[];
+  issues:ProjectIssue[];
+  addProjectIssue:(description:string)=>boolean;
+  addProjectAssumption:(description:string,source?:string)=>boolean;
+  updateProjectAssumption:(id:string,changes:Partial<Omit<ProjectAssumption,"id">>)=>void;
+  removeProjectAssumption:(id:string)=>void;
   switchProject:(id:string)=>void;
   createProject:()=>void;
   renameProject:(name:string)=>void;
@@ -70,8 +84,17 @@ interface PlotContextValue {
   exportProject:()=>unknown;
   importProject:(value:unknown)=>boolean;
   selectedEdgeId: string | null;
+  selectedRoomWall:{roomId:string;side:WallSide}|null;
+  selectRoomWall:(roomId:string,side:WallSide)=>void;
+  selectedPropertyCardId:string|null;
+  selectPropertyCard:(id:string|null)=>void;
+  updateRoomWallThickness:(roomId:string,side:WallSide,thicknessMm:number)=>boolean;
   selectedCornerId: string | null;
-  updateEdgeDimension: (edgeName: PlotEdgeName, lengthMm: number) => void;
+  updateEdgeLength: (edgeId:string,lengthMm:number)=>boolean;
+  splitBoundaryEdge:(edgeId:string)=>boolean;
+  removeBoundaryCorner:(cornerId:string)=>boolean;
+  surveyMetadata:SurveyMetadata|undefined;
+  importSurveyBoundary:(corners:PlotCorner[],survey:Omit<SurveyMetadata,"importedAt">)=>boolean;
   updateCornerPosition: (cornerId: string, point: Point) => void;
   updateBuildingPosition: (point: Point) => void;
   updateBuildingSize: (width: number, height: number) => void;
@@ -83,6 +106,9 @@ interface PlotContextValue {
   addOpening: (roomId:string, type:PlanOpening["type"], side:WallSide) => void;
   removeOpening: (id:string) => void;
   moveOpening: (id:string, point:Point) => void;
+  addPlanObject:(kind:PlanObjectKind,text?:string)=>void;
+  movePlanObject:(id:string,point:Point)=>void;
+  removePlanObject:(id:string)=>void;
   removeFloorPlan: () => void;
   applyFloorPlanPreset: (preset:FloorPlanPreset, targetAreaSqMm?:number, vastuInspired?:boolean) => boolean;
   canUndo: boolean;
@@ -102,10 +128,15 @@ interface LegacyPlotGeometry {
 
 const PlotContext = createContext<PlotContextValue | null>(null);
 const PLOT_STORAGE_KEY = "siteplan-designer:plot-geometry:v4";
-const PROJECTS_STORAGE_KEY = "siteplan-designer:projects:v1";
+const PROJECTS_STORAGE_KEY = "siteplan-designer:projects:v2";
+const LEGACY_PROJECTS_STORAGE_KEY = "siteplan-designer:projects:v1";
 const LEGACY_GEOMETRY_KEY = "siteplan-designer:plot-geometry:v2";
 const LEGACY_DIMENSIONS_KEY = "siteplan-designer:plot-dimensions:v1";
 const CORNER_IDS = ["corner-tl", "corner-tr", "corner-br", "corner-bl"];
+
+function hasValidBoundary(corners:PlotCorner[]):boolean{
+  return validateBoundary(corners).valid;
+}
 
 function isPlotDimensions(value: unknown): value is PlotDimensions {
   if (!value || typeof value !== "object") return false;
@@ -135,56 +166,120 @@ function isLegacyPlotGeometry(value: unknown): value is LegacyPlotGeometry {
 function isPlotGeometry(value: unknown): value is PlotGeometry {
   if (!value || typeof value !== "object") return false;
   const geometry = value as Record<string, unknown>;
+  const building=geometry.building as Record<string,unknown>|undefined;
+  if(building!==undefined&&(!building||typeof building!=="object"||![building.x,building.y,building.width,building.height].every(number=>typeof number==="number"&&Number.isFinite(number))||Number(building.width)<=0||Number(building.height)<=0))return false;
   const corners = geometry.corners;
-  if (!Array.isArray(corners) || corners.length !== 4) return false;
-  return CORNER_IDS.every((id) => {
-    return corners.some(
-      (item) =>
-        item &&
-        typeof item === "object" &&
-        (item as Record<string, unknown>).id === id &&
-        typeof (item as Record<string, unknown>).x === "number" &&
-        Number.isFinite((item as Record<string, unknown>).x) &&
-        typeof (item as Record<string, unknown>).y === "number" &&
-        Number.isFinite((item as Record<string, unknown>).y),
-    );
-  });
+  if (!Array.isArray(corners) || corners.length<3 || corners.some(item=>!item||typeof item!=="object"||typeof (item as Record<string,unknown>).id!=="string"||typeof (item as Record<string,unknown>).name!=="string"||typeof (item as Record<string,unknown>).x!=="number"||!Number.isFinite((item as Record<string,unknown>).x)||typeof (item as Record<string,unknown>).y!=="number"||!Number.isFinite((item as Record<string,unknown>).y)) || !hasValidBoundary(corners as PlotCorner[])) return false;
+  const setbacks=geometry.setbacks as Record<string,unknown>|undefined;
+  if(setbacks!==undefined&&(!setbacks||typeof setbacks!=="object"||!["top","right","bottom","left"].every(edge=>setbacks[edge]===undefined||typeof setbacks[edge]==="number"&&Number.isFinite(setbacks[edge])&&Number(setbacks[edge])>=0)))return false;
+  const survey=geometry.survey as Record<string,unknown>|undefined;
+  if(survey!==undefined&&(!survey||typeof survey!=="object"||typeof survey.sourceFile!=="string"||typeof survey.coordinateReference!=="string"||!["mm","m","ft"].includes(String(survey.coordinateUnit))||typeof survey.originX!=="number"||!Number.isFinite(survey.originX)||typeof survey.originY!=="number"||!Number.isFinite(survey.originY)||typeof survey.importedAt!=="string"||(survey.designBoundaryEditedAt!==undefined&&typeof survey.designBoundaryEditedAt!=="string")||!Array.isArray(survey.sourcePoints)||survey.sourcePoints.some(item=>!item||typeof item!=="object"||typeof (item as Record<string,unknown>).name!=="string"||typeof (item as Record<string,unknown>).x!=="number"||!Number.isFinite((item as Record<string,unknown>).x)||typeof (item as Record<string,unknown>).y!=="number"||!Number.isFinite((item as Record<string,unknown>).y))))return false;
+  const features=geometry.siteFeatures;
+  if(features!==undefined&&(!Array.isArray(features)||features.some(item=>!item||typeof item!=="object"||typeof item.id!=="string"||typeof item.name!=="string"||!["building-footprint","driveway","parking","walkway","landscape","tree","utility","easement","other"].includes(item.kind)||!["existing","proposed","removed"].includes(item.status)||(item.visible!==undefined&&typeof item.visible!=="boolean")||![item.x,item.y,item.width,item.height].every(value=>typeof value==="number"&&Number.isFinite(value))||item.width<=0||item.height<=0)))return false;
+  return true;
 }
 
 function isPoint(value:unknown):value is Point {
   if(!value||typeof value!=="object")return false;const p=value as Record<string,unknown>;
   return typeof p.x==="number"&&Number.isFinite(p.x)&&typeof p.y==="number"&&Number.isFinite(p.y);
 }
+function isRoom(value:unknown):value is Room{
+  if(!value||typeof value!=="object")return false;
+  const room=value as Record<string,unknown>,walls=room.wallThicknesses as Record<string,unknown>|undefined;
+  return typeof room.id==="string"&&typeof room.name==="string"&&room.name.trim().length>0&&(room.kind===undefined||room.kind==="room"||room.kind==="stairs")&&[room.x,room.y,room.width,room.height].every(dimension=>typeof dimension==="number"&&Number.isFinite(dimension))&&Number(room.width)>0&&Number(room.height)>0&&
+    (walls===undefined||!!walls&&["top","right","bottom","left"].every(side=>walls[side]===undefined||typeof walls[side]==="number"&&Number.isFinite(walls[side])&&Number(walls[side])>=0));
+}
+function isPlanObject(value:unknown):value is PlanObject{
+  if(!value||typeof value!=="object")return false;
+  const item=value as Record<string,unknown>;
+  return typeof item.id==="string"&&["dining-table","chair","vent-window","sofa","text"].includes(String(item.kind))&&[item.x,item.y,item.width,item.height].every(n=>typeof n==="number"&&Number.isFinite(n))&&Number(item.width)>0&&Number(item.height)>0&&(item.kind!=="text"||typeof item.text==="string");
+}
+function openingsFitRooms(openings:unknown[],rooms:Room[]):boolean{
+  return openings.every(value=>{
+    if(!value||typeof value!=="object")return false;
+    const opening=value as Record<string,unknown>;
+    if(typeof opening.id!=="string"||typeof opening.roomId!=="string"||(opening.type!=="door"&&opening.type!=="window")||!( ["top","right","bottom","left"] as string[]).includes(String(opening.side))||typeof opening.width!=="number"||!Number.isFinite(opening.width)||opening.width<=0||typeof opening.offset!=="number"||!Number.isFinite(opening.offset)||opening.offset<0)return false;
+    const room=rooms.find(item=>item.id===opening.roomId);if(!room)return false;
+    const wallLength=opening.side==="top"||opening.side==="bottom"?room.width:room.height;
+    return opening.offset+opening.width<=wallLength+1;
+  });
+}
 function isFloorPlan(value:unknown):value is FloorPlanLevel{
   if(!value||typeof value!=="object")return false;
   const plan=value as Record<string,unknown>;
-  const validRoom=(value:unknown)=>{
-    if(!value||typeof value!=="object")return false;
-    const room=value as Record<string,unknown>;
-    return typeof room.id==="string"&&typeof room.name==="string"&&[room.x,room.y,room.width,room.height].every(dimension=>typeof dimension==="number"&&Number.isFinite(dimension));
-  };
-  const validOpening=(value:unknown)=>{
-    if(!value||typeof value!=="object")return false;
-    const opening=value as Record<string,unknown>;
-    return typeof opening.id==="string"&&typeof opening.roomId==="string"&&(opening.type==="door"||opening.type==="window")&&["top","right","bottom","left"].includes(String(opening.side))&&[opening.width,opening.offset].every(dimension=>typeof dimension==="number"&&Number.isFinite(dimension));
-  };
-  return typeof plan.id==="string"&&typeof plan.name==="string"&&Array.isArray(plan.rooms)&&plan.rooms.every(validRoom)&&Array.isArray(plan.openings)&&plan.openings.every(validOpening);
+  return typeof plan.id==="string"&&typeof plan.name==="string"&&Array.isArray(plan.rooms)&&plan.rooms.every(isRoom)&&Array.isArray(plan.openings)&&openingsFitRooms(plan.openings,plan.rooms as Room[])&&(plan.objects===undefined||Array.isArray(plan.objects)&&plan.objects.every(isPlanObject));
 }
 function isSavedProject(value:unknown):value is SavedProject {
   if(!value||typeof value!=="object")return false;const p=value as Record<string,unknown>;
   if(typeof p.id!=="string"||typeof p.name!=="string"||!isPlotGeometry(p.geometry)||!Array.isArray(p.measurements)||typeof p.compassRotation!=="number"||!Number.isFinite(p.compassRotation))return false;
+  if(p.details!==undefined&&(!p.details||typeof p.details!=="object"||["clientName","siteAddress","projectNumber","preparedBy","revision","notes"].some(key=>typeof (p.details as Record<string,unknown>)[key]!=="string")))return false;
+  if(p.assumptions!==undefined&&(!Array.isArray(p.assumptions)||p.assumptions.some(item=>!item||typeof item!=="object"||typeof (item as Record<string,unknown>).id!=="string"||typeof (item as Record<string,unknown>).description!=="string"||!( ["assumed","confirmed"] as string[]).includes(String((item as Record<string,unknown>).status))||((item as Record<string,unknown>).source!==undefined&&typeof (item as Record<string,unknown>).source!=="string"))))return false;
+  if(p.issues!==undefined&&(!Array.isArray(p.issues)||p.issues.some(item=>!item||typeof item!=="object"||["id","revision","date","author","description"].some(key=>typeof (item as Record<string,unknown>)[key]!=="string"))))return false;
   if(p.measurements.some(line=>!line||typeof line!=="object"||!isPoint((line as Record<string,unknown>).start)||!isPoint((line as Record<string,unknown>).end)))return false;
   const g=p.geometry as PlotGeometry;
   if(g.groundPlan!==undefined&&!isFloorPlan(g.groundPlan))return false;
-  if(g.rooms!==undefined&&(!Array.isArray(g.rooms)||g.rooms.some(room=>!room||typeof room.id!=="string"||typeof room.name!=="string"||![room.x,room.y,room.width,room.height].every(n=>typeof n==="number"&&Number.isFinite(n)))))return false;
+  if(g.rooms!==undefined&&(!Array.isArray(g.rooms)||g.rooms.some(room=>!isRoom(room))))return false;
+  if(g.openings!==undefined&&Array.isArray(g.openings)&&!openingsFitRooms(g.openings,g.rooms??[]))return false;
+  if(g.floors!==undefined&&Array.isArray(g.floors)&&g.floors.some(floor=>!isFloorPlan(floor)))return false;
   if(g.openings!==undefined&&(!Array.isArray(g.openings)||g.openings.some(item=>!item||typeof item.id!=="string"||typeof item.roomId!=="string"||!(item.type==="door"||item.type==="window")||!(["top","right","bottom","left"].includes(item.side))||![item.width,item.offset].every(n=>typeof n==="number"&&Number.isFinite(n)))))return false;
-  if(g.floors!==undefined&&(!Array.isArray(g.floors)||g.floors.some(floor=>!floor||typeof floor.id!=="string"||typeof floor.name!=="string"||!Array.isArray(floor.rooms)||floor.rooms.some(room=>!room||typeof room.id!=="string"||typeof room.name!=="string"||![room.x,room.y,room.width,room.height].every(n=>typeof n==="number"&&Number.isFinite(n)))||!Array.isArray(floor.openings)||floor.openings.some(item=>!item||typeof item.id!=="string"||typeof item.roomId!=="string"||!(item.type==="door"||item.type==="window")||!( ["top","right","bottom","left"].includes(item.side))||![item.width,item.offset].every(n=>typeof n==="number"&&Number.isFinite(n))))))return false;
+  if(g.floors!==undefined&&(!Array.isArray(g.floors)||g.floors.some(floor=>!floor||typeof floor.id!=="string"||typeof floor.name!=="string"||!Array.isArray(floor.rooms)||floor.rooms.some(room=>!isRoom(room))||!Array.isArray(floor.openings)||floor.openings.some(item=>!item||typeof item.id!=="string"||typeof item.roomId!=="string"||!(item.type==="door"||item.type==="window")||!( ["top","right","bottom","left"].includes(item.side))||![item.width,item.offset].every(n=>typeof n==="number"&&Number.isFinite(n))))))return false;
   return true;
 }
-function isSavedProjectList(value:unknown):value is SavedProject[]{return Array.isArray(value)&&value.length>0&&value.every(isSavedProject);}
+function isLegacyRoom(value:unknown):value is Room{
+  if(!value||typeof value!=="object")return false;
+  const room=value as Record<string,unknown>,walls=room.wallThicknesses as Record<string,unknown>|undefined;
+  return typeof room.id==="string"&&typeof room.name==="string"&&(room.kind===undefined||room.kind==="room"||room.kind==="stairs")&&[room.x,room.y,room.width,room.height].every(number=>typeof number==="number"&&Number.isFinite(number))&&Number(room.width)>0&&Number(room.height)>0&&
+    (walls===undefined||!!walls&&["top","right","bottom","left"].every(side=>walls[side]===undefined||typeof walls[side]==="number"&&Number.isFinite(walls[side])&&Number(walls[side])>=0));
+}
+function isLegacyOpening(value:unknown):boolean{
+  if(!value||typeof value!=="object")return false;
+  const opening=value as Record<string,unknown>;
+  return typeof opening.id==="string"&&typeof opening.roomId==="string"&&(opening.type==="door"||opening.type==="window")&&["top","right","bottom","left"].includes(String(opening.side))&&typeof opening.width==="number"&&Number.isFinite(opening.width)&&typeof opening.offset==="number"&&Number.isFinite(opening.offset);
+}
+function isLegacyFloorPlan(value:unknown):boolean{
+  if(!value||typeof value!=="object")return false;
+  const plan=value as Record<string,unknown>;
+  return typeof plan.id==="string"&&typeof plan.name==="string"&&Array.isArray(plan.rooms)&&plan.rooms.every(isLegacyRoom)&&Array.isArray(plan.openings)&&plan.openings.every(isLegacyOpening);
+}
+function isLegacySavedProject(value:unknown):value is SavedProject{
+  if(!value||typeof value!=="object")return false;
+  const project=value as Record<string,unknown>;
+  if(typeof project.id!=="string"||typeof project.name!=="string"||!isPlotGeometry(project.geometry)||!Array.isArray(project.measurements)||project.measurements.some(line=>!line||typeof line!=="object"||!isPoint((line as Record<string,unknown>).start)||!isPoint((line as Record<string,unknown>).end))||typeof project.compassRotation!=="number"||!Number.isFinite(project.compassRotation))return false;
+  if(project.details!==undefined&&(!project.details||typeof project.details!=="object"||["clientName","siteAddress","projectNumber","preparedBy","revision","notes"].some(key=>typeof (project.details as Record<string,unknown>)[key]!=="string")))return false;
+  if(project.assumptions!==undefined&&(!Array.isArray(project.assumptions)||project.assumptions.some(item=>!item||typeof item!=="object"||typeof (item as Record<string,unknown>).id!=="string"||typeof (item as Record<string,unknown>).description!=="string"||!( ["assumed","confirmed"] as string[]).includes(String((item as Record<string,unknown>).status))||((item as Record<string,unknown>).source!==undefined&&typeof (item as Record<string,unknown>).source!=="string"))))return false;
+  if(project.issues!==undefined&&(!Array.isArray(project.issues)||project.issues.some(item=>!item||typeof item!=="object"||["id","revision","date","author","description"].some(key=>typeof (item as Record<string,unknown>)[key]!=="string"))))return false;
+  const geometry=project.geometry as PlotGeometry;
+  return (geometry.rooms===undefined||Array.isArray(geometry.rooms)&&geometry.rooms.every(isLegacyRoom))&&
+    (geometry.openings===undefined||Array.isArray(geometry.openings)&&geometry.openings.every(isLegacyOpening))&&
+    (geometry.groundPlan===undefined||isLegacyFloorPlan(geometry.groundPlan))&&
+    (geometry.floors===undefined||Array.isArray(geometry.floors)&&geometry.floors.every(isLegacyFloorPlan));
+}
+function migrateLegacyProject(project:SavedProject):SavedProject{
+  const geometry=normalizeFloorGeometry(project.geometry);
+  const migrateFloor=(floor:FloorPlanLevel):FloorPlanLevel=>{
+    const rooms=floor.rooms.filter(isLegacyRoom).map((room,index)=>({...room,name:room.name.trim()||`Space ${index+1}`}));
+    const openings=floor.openings.flatMap(opening=>{
+      if(!isLegacyOpening(opening)||opening.width<=0||opening.offset<0)return [];
+      const room=rooms.find(item=>item.id===opening.roomId);if(!room)return [];
+      const side=opening.side as WallSide,length=side==="top"||side==="bottom"?room.width:room.height,width=Math.min(opening.width,length);
+      if(width<=0)return [];
+      return [{...opening,width,offset:Math.min(opening.offset,length-width)}];
+    });
+    return {...floor,rooms,openings};
+  };
+  const groundPlan=migrateFloor(geometry.groundPlan??{id:"ground",name:"Ground · Stilt parking",rooms:[],openings:[]});
+  const floors=(geometry.floors??[]).map(migrateFloor),activeFloorId=geometry.activeFloorId??floors[0]?.id??"floor-1";
+  const active=activeFloorId==="ground"?groundPlan:floors.find(floor=>floor.id===activeFloorId)??floors[0]??{id:activeFloorId,name:"Floor 1",rooms:[],openings:[]};
+  return {...project,geometry:{...geometry,groundPlan,floors,activeFloorId,rooms:active.rooms,openings:active.openings}};
+}
+function isUnknownArray(value:unknown):value is unknown[]{return Array.isArray(value);}
+function isSavedProjectCollection(value:unknown):value is ProjectCollectionDocumentV2{
+  return isProjectCollectionDocumentV2(value)&&value.projects.length>0&&value.projects.every(isSavedProject);
+}
 
 function normalizeFloorGeometry(geometry:PlotGeometry):PlotGeometry{
   const groundPlan=geometry.groundPlan??{id:"ground",name:"Ground · Stilt parking",rooms:[],openings:[]};
+  if(geometry.floors!==undefined&&geometry.floors.length===0&&geometry.activeFloorId==="ground")return {...geometry,groundPlan,rooms:groundPlan.rooms,openings:groundPlan.openings};
   if(geometry.floors?.length){
     if(geometry.activeFloorId==="ground")return {...geometry,groundPlan,rooms:groundPlan.rooms,openings:groundPlan.openings};
     const active=geometry.floors.find(floor=>floor.id===geometry.activeFloorId)??geometry.floors[0];
@@ -195,9 +290,19 @@ function normalizeFloorGeometry(geometry:PlotGeometry):PlotGeometry{
 }
 
 function floorPlansForGeometry(geometry:PlotGeometry):FloorPlanLevel[]{
+  if(geometry.floors!==undefined&&geometry.floors.length===0&&geometry.activeFloorId==="ground")return [];
   const activeId=geometry.activeFloorId??"floor-1";
   const stored=geometry.floors?.length?geometry.floors:[{id:activeId,name:"Floor 1",rooms:geometry.rooms??[],openings:geometry.openings??[]}];
   return stored.map(floor=>floor.id===activeId?{...floor,rooms:geometry.rooms??floor.rooms,openings:geometry.openings??floor.openings}:floor);
+}
+
+function updateActiveLevel(geometry:PlotGeometry,update:(level:FloorPlanLevel)=>FloorPlanLevel):PlotGeometry{
+  if(geometry.activeFloorId==="ground"){
+    const ground=geometry.groundPlan??{id:"ground",name:"Ground · Stilt parking",rooms:[],openings:[]};
+    return {...geometry,groundPlan:update(ground)};
+  }
+  const id=geometry.activeFloorId??"floor-1";
+  return {...geometry,floors:floorPlansForGeometry(geometry).map(level=>level.id===id?update(level):level)};
 }
 
 function allPlansForGeometry(geometry:PlotGeometry):FloorPlanLevel[]{
@@ -222,6 +327,10 @@ function syncStairwellGeometry(geometry:PlotGeometry,rooms:Room[]):PlotGeometry{
 
 function getDimensions(corners: PlotCorner[]): PlotDimensions {
   const byId = new Map(corners.map((corner) => [corner.id, corner]));
+  if(corners.length!==4||!CORNER_IDS.every(id=>byId.has(id))){
+    const minX=Math.min(...corners.map(point=>point.x)),maxX=Math.max(...corners.map(point=>point.x)),minY=Math.min(...corners.map(point=>point.y)),maxY=Math.max(...corners.map(point=>point.y));
+    return {top:maxX-minX,right:maxY-minY,bottom:maxX-minX,left:maxY-minY};
+  }
   const topLeft = byId.get("corner-tl")!;
   const topRight = byId.get("corner-tr")!;
   const bottomRight = byId.get("corner-br")!;
@@ -248,14 +357,17 @@ function rectanglesArea(rectangles:{x:number;y:number;width:number;height:number
   return area;
 }
 
-function setbackCorners(corners:PlotCorner[],distanceMm:number):PlotCorner[]{
-  if(distanceMm<=0)return corners;
-  return offsetPolygonInward(corners,distanceMm).map((point,index)=>({...corners[index],x:point.x,y:point.y}));
+function getSetbackDistances(geometry:PlotGeometry):Record<PlotEdgeName,number>{
+  return {top:Math.max(0,geometry.setbacks?.top??geometry.setbackMm??0),right:Math.max(0,geometry.setbacks?.right??geometry.setbackMm??0),bottom:Math.max(0,geometry.setbacks?.bottom??geometry.setbackMm??0),left:Math.max(0,geometry.setbacks?.left??geometry.setbackMm??0)};
 }
-function signedPolygonArea(points:{x:number;y:number}[]):number{
-  return points.reduce((sum,point,index)=>{const next=points[(index+1)%points.length];return sum+point.x*next.y-next.x*point.y;},0)/2;
+function setbackCorners(corners:PlotCorner[],distances:number|Record<PlotEdgeName,number>):PlotCorner[]{
+  const values=typeof distances==="number"?{top:distances,right:distances,bottom:distances,left:distances}:distances;
+  if(Object.values(values).every(distance=>distance<=0))return corners;
+  return rectangularSetback(corners,values).map((point,index)=>({...corners[index],x:point.x,y:point.y}));
 }
-
+function withEditedBoundary(geometry:PlotGeometry,corners:PlotCorner[]):PlotGeometry{
+  return {...geometry,corners,...(geometry.survey?{survey:{...geometry.survey,designBoundaryEditedAt:new Date().toISOString()}}:{})};
+}
 function loadPlotGeometry(): PlotGeometry {
   const legacyDimensions = readStoredValue(
     LEGACY_DIMENSIONS_KEY,
@@ -267,36 +379,39 @@ function loadPlotGeometry(): PlotGeometry {
     isLegacyPlotGeometry,
     { dimensions: legacyDimensions, origin: { x: 0, y: 0 }, rotation: 0 },
   );
-  const migratedCorners = createPlot(
-    legacyGeometry.dimensions,
-    legacyGeometry.origin,
-    legacyGeometry.rotation,
-  ).corners;
+  let migratedCorners:PlotCorner[];
+  try {
+    migratedCorners=createPlot(legacyGeometry.dimensions,legacyGeometry.origin,legacyGeometry.rotation).corners;
+  } catch {
+    // Older saved dimensions may be positive but geometrically impossible under
+    // the right-angle assumption. Keep the app loadable and use a known-valid plot.
+    migratedCorners=createPlot(DEFAULT_PLOT_DIMENSIONS_MM).corners;
+  }
   return readStoredValue(PLOT_STORAGE_KEY, isPlotGeometry, {
     corners: migratedCorners,
   });
 }
 
 function loadProjects():SavedProject[] {
-  const saved=readStoredValue(PROJECTS_STORAGE_KEY,isSavedProjectList,[]);
-  if(saved.length)return saved;
+  const current=readStoredValue<ProjectCollectionDocumentV2|null>(PROJECTS_STORAGE_KEY,isSavedProjectCollection,null);
+  if(current)return current.projects;
+  const legacy=readStoredValue<unknown[]>(LEGACY_PROJECTS_STORAGE_KEY,isUnknownArray,[]);
+  const migrated=legacy.filter(isLegacySavedProject).map(migrateLegacyProject).filter(isSavedProject);
+  if(migrated.length)return migrated;
   return [{id:crypto.randomUUID(),name:"My site plan",geometry:loadPlotGeometry(),measurements:[],compassRotation:0}];
 }
 
 function createPlotFromCorners(corners: PlotCorner[]): Plot {
-  const dimensions = getDimensions(corners);
-  const plot = createPlot(dimensions);
-  const cornersById = new Map(corners.map((corner) => [corner.id, corner]));
-  const nextCorners = CORNER_IDS.map((id) => cornersById.get(id)!);
-  const nextById = new Map(nextCorners.map((corner) => [corner.id, corner]));
+  const nextCorners=corners;
+  const legacyNames:Record<string,string>={"corner-bl|corner-tl":"left","corner-br|corner-tr":"right","corner-bl|corner-br":"bottom","corner-tl|corner-tr":"top"};
+  const cardinalLabels:Record<string,string>={top:"Top",right:"Right",bottom:"Bottom",left:"Left"};
   return {
-    ...plot,
+    id:"residential-plot-1",
+    name:"Site boundary",
     corners: nextCorners,
-    edges: plot.edges.map((edge) => {
-      const start = nextById.get(edge.startCornerId)!;
-      const end = nextById.get(edge.endCornerId)!;
-      const lengthMm = distance(start, end);
-      return { ...edge, targetLengthMm: lengthMm, actualLengthMm: lengthMm };
+    edges:nextCorners.map((start,index)=>{
+      const end=nextCorners[(index+1)%nextCorners.length],name=legacyNames[[start.id,end.id].sort().join("|")]??`edge-${index+1}`;
+      return {id:`edge-${start.id}-${end.id}`,name,label:cardinalLabels[name]??`${start.name}–${end.name}`,startCornerId:start.id,endCornerId:end.id,targetLengthMm:distance(start,end),actualLengthMm:distance(start,end)};
     }),
   };
 }
@@ -315,6 +430,13 @@ export function PlotProvider({ children }: { children: ReactNode }) {
   const [,setHistoryVersion] = useState(0);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectedCornerId, setSelectedCornerId] = useState<string | null>(null);
+  const [selectedRoomWall,setSelectedRoomWall]=useState<{roomId:string;side:WallSide}|null>(null);
+  const [selectedSiteFeatureId,setSelectedSiteFeatureId]=useState<string|null>(null);
+  const [selectedPropertyCardId,setSelectedPropertyCardId]=useState<string|null>(null);
+  const activeProject=projects.find(project=>project.id===activeProjectId);
+  const projectDetails=activeProject?.details??{clientName:"",siteAddress:"",projectNumber:"",preparedBy:"",revision:"",notes:""};
+  const assumptions=activeProject?.assumptions??[];
+  const issues=activeProject?.issues??[];
 
   const plot = useMemo(() => createPlotFromCorners(geometry.corners), [geometry.corners]);
   const dimensions = useMemo(() => getDimensions(geometry.corners), [geometry.corners]);
@@ -326,11 +448,15 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     height: (metrics.bounds.maxY - metrics.bounds.minY) * 0.6,
   };
   const setbackMm=Math.max(0,geometry.setbackMm??0);
+  const setbackDistances=getSetbackDistances(geometry);
+  const surveyMetadata=geometry.survey;
   const rooms: Room[] = geometry.rooms ?? [];
+  const siteFeatures=geometry.siteFeatures??[];
   const openings=geometry.openings ?? [];
   const activeFloorId=geometry.activeFloorId??"floor-1";
   const groundLevel=geometry.groundPlan??{id:"ground",name:"Ground · Stilt parking",rooms:[],openings:[]};
   const floorPlans=useMemo(()=>floorPlansForGeometry(geometry),[geometry]);
+  const planObjects=(activeFloorId==="ground"?groundLevel:floorPlans.find(level=>level.id===activeFloorId))?.objects??[];
 
   const setMeasurements=useCallback((update:MeasurementLine[]|((current:MeasurementLine[])=>MeasurementLine[]))=>setMeasurementsState(current=>{
     const next=typeof update==="function"?update(current):update;measurementsRef.current=next;return next;
@@ -346,7 +472,7 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     compassRef.current=compassRotation;
     setProjects(current=>current.map(project=>project.id===activeProjectId?{...project,geometry,measurements,compassRotation}:project));
   }, [geometry,measurements,compassRotation,activeProjectId]);
-  useEffect(()=>{writeStoredValue(PROJECTS_STORAGE_KEY,projects);},[projects]);
+  useEffect(()=>{writeStoredValue(PROJECTS_STORAGE_KEY,createProjectCollectionDocument(projects));},[projects]);
 
   const switchProject=useCallback((id:string)=>{
     if(id===activeProjectId)return;
@@ -365,6 +491,25 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     setGeometry(next.geometry);setMeasurementsState([]);setCompassRotationState(0);historyRef.current={past:[],future:[],lastAt:0};setHistoryVersion(v=>v+1);
   },[activeProjectId,projects.length]);
   const renameProject=useCallback((name:string)=>{const value=name.trim();if(!value)return;setProjects(current=>current.map(project=>project.id===activeProjectId?{...project,name:value}:project));},[activeProjectId]);
+  const updateProjectDetails=useCallback((details:Partial<ProjectDetails>)=>{setProjects(current=>current.map(project=>project.id===activeProjectId?{...project,details:{clientName:"",siteAddress:"",projectNumber:"",preparedBy:"",revision:"",notes:"",...project.details,...details}}:project));},[activeProjectId]);
+  const addProjectAssumption=useCallback((description:string,source?:string):boolean=>{
+    const clean=description.trim();if(!clean)return false;
+    const assumption:ProjectAssumption={id:crypto.randomUUID(),description:clean,status:"assumed",...(source?.trim()?{source:source.trim()}:{})};
+    setProjects(current=>current.map(project=>project.id===activeProjectId?{...project,assumptions:[...(project.assumptions??[]),assumption]}:project));return true;
+  },[activeProjectId]);
+  const updateProjectAssumption=useCallback((id:string,changes:Partial<Omit<ProjectAssumption,"id">>)=>{
+    setProjects(current=>current.map(project=>project.id===activeProjectId?{...project,assumptions:(project.assumptions??[]).map(item=>item.id===id?{...item,...changes}:item)}:project));
+  },[activeProjectId]);
+  const removeProjectAssumption=useCallback((id:string)=>{
+    setProjects(current=>current.map(project=>project.id===activeProjectId?{...project,assumptions:(project.assumptions??[]).filter(item=>item.id!==id)}:project));
+  },[activeProjectId]);
+  const addProjectIssue=useCallback((description:string):boolean=>{
+    const clean=description.trim(),project=projects.find(item=>item.id===activeProjectId);if(!clean||!project)return false;
+    const details=project.details,revision=details?.revision.trim()??"";if(!revision)return false;
+    const now=new Date(),date=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+    const issue:ProjectIssue={id:crypto.randomUUID(),revision,date,author:details?.preparedBy.trim()??"",description:clean};
+    setProjects(current=>current.map(item=>item.id===activeProjectId?{...item,issues:[...(item.issues??[]),issue]}:item));return true;
+  },[activeProjectId,projects]);
   const deleteProject=useCallback(()=>{
     const remaining=projects.filter(project=>project.id!==activeProjectId);
     if(remaining.length){
@@ -380,13 +525,17 @@ export function PlotProvider({ children }: { children: ReactNode }) {
   },[activeProjectId,projects]);
   const exportProject=useCallback(()=>{
     const current=projects.find(project=>project.id===activeProjectId);
-    return {format:EXPORT_FORMAT,version:1,exportedAt:new Date().toISOString(),project:{...(current??{id:activeProjectId,name:"Site plan"}),geometry:geometryRef.current,measurements:measurementsRef.current,compassRotation:compassRef.current}};
+    const project={...(current??{id:activeProjectId,name:"Site plan"}),geometry:geometryRef.current,measurements:measurementsRef.current,compassRotation:compassRef.current};
+    return {format:EXPORT_FORMAT,version:3,exportedAt:new Date().toISOString(),document:createProjectDocument(project)};
   },[activeProjectId,projects]);
   const importProject=useCallback((value:unknown)=>{
     if(!value||typeof value!=="object")return false;
     const payload=value as Record<string,unknown>;
-    if(payload.format!==EXPORT_FORMAT||payload.version!==1||!isSavedProject(payload.project))return false;
-    const source=payload.project;
+    if(payload.format!==EXPORT_FORMAT)return false;
+    const source=payload.version===1&&isLegacySavedProject(payload.project)?migrateLegacyProject(payload.project):
+      payload.version===2&&isProjectDocumentV1(payload.document)&&isLegacySavedProject(payload.document.project)?migrateLegacyProject(payload.document.project):
+      payload.version===3&&isProjectDocumentV2(payload.document)?savedProjectFromDocumentV2(payload.document):undefined;
+    if(!source||!isSavedProject(source))return false;
     const imported:SavedProject={...source,id:crypto.randomUUID(),name:`${source.name} (import)`,geometry:normalizeFloorGeometry(source.geometry)};
     setProjects(current=>[...current.map(project=>project.id===activeProjectId?{...project,geometry:geometryRef.current,measurements:measurementsRef.current,compassRotation:compassRef.current}:project),imported]);
     setActiveProjectId(imported.id);geometryRef.current=imported.geometry;measurementsRef.current=imported.measurements;compassRef.current=imported.compassRotation;
@@ -429,7 +578,7 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     const plans=floorPlansForGeometry(current),active=plans.find(floor=>floor.id===(current.activeFloorId??"floor-1"));
     if(!active)return current;
     const id=crypto.randomUUID(),roomIds=new Map(active.rooms.map(room=>[room.id,crypto.randomUUID()]));
-    const copy:FloorPlanLevel={id,name:`Floor ${plans.length+1}`,rooms:active.rooms.map(room=>({...room,id:roomIds.get(room.id)!})),openings:active.openings.map(opening=>({...opening,id:crypto.randomUUID(),roomId:roomIds.get(opening.roomId)??opening.roomId}))};
+    const copy:FloorPlanLevel={id,name:`Floor ${plans.length+1}`,rooms:active.rooms.map(room=>({...room,id:roomIds.get(room.id)!})),openings:active.openings.map(opening=>({...opening,id:crypto.randomUUID(),roomId:roomIds.get(opening.roomId)??opening.roomId})),objects:active.objects?.map(item=>({...item,id:crypto.randomUUID()}))};
     const index=plans.findIndex(floor=>floor.id===active.id);
     return {...current,floors:[...plans.slice(0,index+1),copy,...plans.slice(index+1)],activeFloorId:id,rooms:copy.rooms,openings:copy.openings};
   }),[commitGeometry]);
@@ -439,8 +588,10 @@ export function PlotProvider({ children }: { children: ReactNode }) {
   },[commitGeometry]);
   const removeActiveFloor=useCallback(()=>commitGeometry(current=>{
     if(current.activeFloorId==="ground")return current;
-    const plans=floorPlansForGeometry(current);if(plans.length<=1)return current;
-    const index=plans.findIndex(floor=>floor.id===(current.activeFloorId??"floor-1")),remaining=plans.filter(floor=>floor.id!==(current.activeFloorId??"floor-1")),target=remaining[Math.max(0,index-1)];
+    const plans=floorPlansForGeometry(current),activeId=current.activeFloorId??"floor-1";
+    const index=plans.findIndex(floor=>floor.id===activeId),remaining=plans.filter(floor=>floor.id!==activeId);
+    if(remaining.length===0){const ground=current.groundPlan??{id:"ground",name:"Ground · Stilt parking",rooms:[],openings:[]};return {...current,floors:[],activeFloorId:"ground",groundPlan:ground,rooms:ground.rooms,openings:ground.openings};}
+    const target=remaining[Math.max(0,index-1)];
     return {...current,floors:remaining,activeFloorId:target.id,rooms:target.rooms,openings:target.openings};
   }),[commitGeometry]);
   const undo = useCallback(() => {
@@ -489,8 +640,10 @@ export function PlotProvider({ children }: { children: ReactNode }) {
   const allRoomsFit=(geometry:PlotGeometry,corners:PlotCorner[])=>allPlansForGeometry(geometry).every(floor=>floor.rooms.every(room=>isInside(room.x,room.y,room.width,room.height,corners)));
   const updateCornerPosition = useCallback((cornerId: string, point: Point) => {
     commitGeometry(current=>{
+      const target=current.corners.find(corner=>corner.id===cornerId);
+      if(!target||target.x===point.x&&target.y===point.y)return current;
       const corners=current.corners.map(corner=>corner.id===cornerId?{...corner,x:point.x,y:point.y}:corner);
-      return allRoomsFit(current,setbackCorners(corners,current.setbackMm??0))?{...current,corners}:current;
+      return hasValidBoundary(corners)&&allRoomsFit(current,setbackCorners(corners,getSetbackDistances(current)))?withEditedBoundary(current,corners):current;
     });
   }, [commitGeometry,isInside]);
   const addStairwell=useCallback(()=>{
@@ -501,7 +654,7 @@ export function PlotProvider({ children }: { children: ReactNode }) {
       let best:{x:number;y:number;score:number}|null=null;
       const plansRooms=plans.flatMap(floor=>floor.rooms.filter(room=>room.kind!=="stairs"));
       for(let y=minY;y+height<=maxY;y+=600)for(let x=minX;x+width<=maxX;x+=600){
-        if(!isInside(x,y,width,height,setbackCorners(geometry.corners,geometry.setbackMm??0)))continue;
+        if(!isInside(x,y,width,height,setbackCorners(geometry.corners,getSetbackDistances(geometry))))continue;
         const overlap=plansRooms.reduce((sum,room)=>sum+Math.max(0,Math.min(x+width,room.x+room.width)-Math.max(x,room.x))*Math.max(0,Math.min(y+height,room.y+room.height)-Math.max(y,room.y)),0);
         const centerDistance=Math.hypot(x+width/2-(minX+maxX)/2,y+height/2-(minY+maxY)/2);
         const score=overlap+centerDistance*10;
@@ -529,21 +682,52 @@ export function PlotProvider({ children }: { children: ReactNode }) {
       return isInside(next.x,next.y,next.width,next.height,current.corners) ? {...current,building:next} : current;
     });
   }, [building.x, building.y, building.width, building.height, commitGeometry]);
+  const validateSetback=(geometry:PlotGeometry,distances:Record<PlotEdgeName,number>)=>{
+    const boundary=setbackCorners(geometry.corners,distances);
+    if(!boundary.every(point=>Number.isFinite(point.x)&&Number.isFinite(point.y)))return false;
+    if(!validateBoundary(boundary).valid)return false;
+    const inside=(point:Point)=>{
+      let contained=false;
+      for(let i=0,j=geometry.corners.length-1;i<geometry.corners.length;j=i++){
+        const a=geometry.corners[i],b=geometry.corners[j];
+        const cross=(point.x-a.x)*(b.y-a.y)-(point.y-a.y)*(b.x-a.x);
+        if(Math.abs(cross)<.1&&point.x>=Math.min(a.x,b.x)-.1&&point.x<=Math.max(a.x,b.x)+.1&&point.y>=Math.min(a.y,b.y)-.1&&point.y<=Math.max(a.y,b.y)+.1)return true;
+        if(((a.y>point.y)!==(b.y>point.y))&&point.x<(b.x-a.x)*(point.y-a.y)/(b.y-a.y)+a.x)contained=!contained;
+      }
+      return contained;
+    };
+    return boundary.every(inside);
+  };
   const setSetbackMm=useCallback((distance:number):boolean=>{
     const nextDistance=Number.isFinite(distance)?Math.max(0,distance):0;
-    const boundary=setbackCorners(geometryRef.current.corners,nextDistance);
-    if(!boundary.every(point=>Number.isFinite(point.x)&&Number.isFinite(point.y)))return false;
-    const originalArea=signedPolygonArea(geometryRef.current.corners),insetArea=signedPolygonArea(boundary);
-    if(nextDistance>0&&(Math.sign(originalArea)!==Math.sign(insetArea)||Math.abs(insetArea)<1||Math.abs(insetArea)>=Math.abs(originalArea)))return false;
-    if(!allRoomsFit(geometryRef.current,boundary))return false;
-    commitGeometry(current=>({...current,setbackMm:nextDistance}));
+    const values={top:nextDistance,right:nextDistance,bottom:nextDistance,left:nextDistance};
+    if(!validateSetback(geometryRef.current,values))return false;
+    commitGeometry(current=>({...current,setbackMm:nextDistance,setbacks:values}));
     return true;
   },[commitGeometry,isInside]);
+  const setSetbackDistance=useCallback((edge:PlotEdgeName,distance:number):boolean=>{
+    if(!Number.isFinite(distance)||distance<0)return false;
+    const values={...getSetbackDistances(geometryRef.current),[edge]:distance};
+    if(!validateSetback(geometryRef.current,values))return false;
+    commitGeometry(current=>({...current,setbacks:values}));
+    return true;
+  },[commitGeometry,isInside]);
+  const setSetbackDistances=useCallback((distances:Record<PlotEdgeName,number>):boolean=>{
+    if(Object.values(distances).some(distance=>!Number.isFinite(distance)||distance<0))return false;
+    const values={...distances};
+    if(!validateSetback(geometryRef.current,values))return false;
+    commitGeometry(current=>({...current,setbacks:values}));
+    return true;
+  },[commitGeometry,isInside]);
+  const selectEdge=useCallback((id:string|null)=>{setSelectedEdgeId(id);setSelectedPropertyCardId(id?`edge-${id}`:null);},[]);
+  const selectCorner=useCallback((id:string|null)=>{setSelectedCornerId(id);setSelectedPropertyCardId(id?`corner-${id}`:null);},[]);
+  const selectSiteFeature=useCallback((id:string|null)=>{setSelectedSiteFeatureId(id);setSelectedRoomWall(null);setSelectedPropertyCardId(id?`site-feature-${id}`:null);},[]);
+  const selectRoomWall=useCallback((roomId:string,side:WallSide)=>{setSelectedRoomWall({roomId,side});setSelectedPropertyCardId(`room-${roomId}`);},[]);
 
   const addRoom = useCallback((room: Omit<Room, "id">) => commitGeometry(current => {
     const existing = current.rooms ?? [];
     const next = { ...room, id: crypto.randomUUID() };
-    const boundary=setbackCorners(current.corners,current.setbackMm??0);
+    const boundary=setbackCorners(current.corners,getSetbackDistances(current));
     if (isInside(next.x, next.y, next.width, next.height, boundary)) {
       const rooms=[...existing,next];return next.kind==="stairs"?syncStairwellGeometry(current,rooms):{...current,rooms};
     }
@@ -560,21 +744,32 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     const rooms=existing.map(room => {
       if (room.id !== id) return room;
       const x = point.x - room.width / 2, y = point.y - room.height / 2;
-      return isInside(x, y, room.width, room.height, setbackCorners(current.corners,current.setbackMm??0)) ? { ...room, x, y } : room;
+      return isInside(x, y, room.width, room.height, setbackCorners(current.corners,getSetbackDistances(current))) ? { ...room, x, y } : room;
     });
     return existing.find(room=>room.id===id)?.kind==="stairs"?syncStairwellGeometry(current,rooms):{...current,rooms};
   }), [building.x, building.y, building.width, building.height, commitGeometry]);
   const moveFloorPlan = useCallback((delta:Point) => commitGeometry(current=>{
     const rooms=current.rooms ?? [];
     const moved=rooms.map(room=>({...room,x:room.x+delta.x,y:room.y+delta.y}));
-    const boundary=setbackCorners(current.corners,current.setbackMm??0);
-    return moved.every(room=>isInside(room.x,room.y,room.width,room.height,boundary)) ? (rooms.some(room=>room.kind==="stairs")?syncStairwellGeometry(current,moved):{...current,rooms:moved}) : current;
+    const boundary=setbackCorners(current.corners,getSetbackDistances(current));
+    if(!moved.every(room=>isInside(room.x,room.y,room.width,room.height,boundary)))return current;
+    const next=rooms.some(room=>room.kind==="stairs")?syncStairwellGeometry(current,moved):{...current,rooms:moved};
+    return updateActiveLevel(next,level=>({...level,objects:(level.objects??[]).map(item=>({...item,x:item.x+delta.x,y:item.y+delta.y}))}));
   }),[commitGeometry]);
   const resizeRoom = useCallback((id: string, x: number, y: number, width: number, height: number) => commitGeometry(current => {
+    if(![x,y,width,height].every(Number.isFinite)||width<=0||height<=0)return current;
     const existing = current.rooms ?? [];
-    const boundary=setbackCorners(current.corners,current.setbackMm??0);
+    const boundary=setbackCorners(current.corners,getSetbackDistances(current));
     const rooms=existing.map(room => room.id !== id ? room : isInside(x, y, width, height, boundary) ? { ...room, x, y, width, height } : room);
-    return existing.find(room=>room.id===id)?.kind==="stairs"?syncStairwellGeometry(current,rooms):{...current,rooms};
+    const resized=rooms.find(room=>room.id===id);
+    if(!resized)return current;
+    const openings=(current.openings??[]).map(opening=>{
+      if(opening.roomId!==id)return opening;
+      const length=opening.side==="top"||opening.side==="bottom"?resized.width:resized.height;
+      const openingWidth=Math.min(opening.width,length);
+      return {...opening,width:openingWidth,offset:Math.min(Math.max(0,opening.offset),length-openingWidth)};
+    });
+    return resized.kind==="stairs"?syncStairwellGeometry({...current,openings},rooms):{...current,rooms,openings};
   }), [building.x, building.y, building.width, building.height, commitGeometry]);
   const removeRoom = useCallback((id: string) => commitGeometry(current => {
     const removed=(current.rooms??[]).find(room=>room.id===id),rooms=(current.rooms??[]).filter(room=>room.id!==id),openings=(current.openings??[]).filter(item=>item.roomId!==id);
@@ -603,7 +798,18 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     const [side,,offset]=candidates.sort((a,b)=>a[1]-b[1])[0]??[opening.side,0,opening.offset];
     return {...current,openings:(current.openings??[]).map(item=>item.id===id?{...item,side,offset}:item)};
   }),[commitGeometry]);
-  const removeFloorPlan=useCallback(()=>commitGeometry(current=>({...current,rooms:(current.rooms??[]).filter(room=>room.kind==="stairs"),openings:(current.openings??[]).filter(opening=>(current.rooms??[]).some(room=>room.id===opening.roomId&&room.kind==="stairs"))})),[commitGeometry]);
+  const addPlanObject=useCallback((kind:PlanObjectKind,text="Text")=>commitGeometry(current=>{
+    const sizes:Record<PlanObjectKind,{width:number;height:number}>={"dining-table":{width:1400,height:800},chair:{width:460,height:460},"vent-window":{width:900,height:120},sofa:{width:1900,height:850},text:{width:1600,height:500}};
+    const size=sizes[kind],room=(current.rooms??[]).find(item=>item.kind!=="stairs"),bounds=computePlotMetrics(current.corners).bounds;
+    const center=room?{x:room.x+room.width/2,y:room.y+room.height/2}:{x:(bounds.minX+bounds.maxX)/2,y:(bounds.minY+bounds.maxY)/2};
+    const objects=((current.activeFloorId==="ground"?current.groundPlan:floorPlansForGeometry(current).find(level=>level.id===current.activeFloorId))?.objects??[]);
+    const offset=(objects.length%5)*250;
+    const item:PlanObject={id:crypto.randomUUID(),kind,x:center.x-size.width/2+offset,y:center.y-size.height/2+offset,...size,...(kind==="text"?{text:text.trim()||"Text"}:{})};
+    return updateActiveLevel(current,level=>({...level,objects:[...(level.objects??[]),item]}));
+  }),[commitGeometry]);
+  const movePlanObject=useCallback((id:string,point:Point)=>commitGeometry(current=>updateActiveLevel(current,level=>({...level,objects:(level.objects??[]).map(item=>item.id===id?{...item,x:point.x,y:point.y}:item)}))),[commitGeometry]);
+  const removePlanObject=useCallback((id:string)=>commitGeometry(current=>updateActiveLevel(current,level=>({...level,objects:(level.objects??[]).filter(item=>item.id!==id)}))),[commitGeometry]);
+  const removeFloorPlan=useCallback(()=>commitGeometry(current=>updateActiveLevel({...current,rooms:(current.rooms??[]).filter(room=>room.kind==="stairs"),openings:(current.openings??[]).filter(opening=>(current.rooms??[]).some(room=>room.id===opening.roomId&&room.kind==="stairs"))},level=>({...level,objects:[]}))),[commitGeometry]);
   const applyFloorPlanPreset=useCallback((preset:FloorPlanPreset,targetAreaSqMm?:number,vastuInspired=false)=>{
     const layouts:Record<FloorPlanPreset,Array<{name:string;x:number;y:number;width:number;height:number;kind?:RoomKind}>>={
       "1bhk":[{name:"Living & dining",x:0,y:0,width:16,height:12},{name:"Kitchen",x:16,y:0,width:9,height:8},{name:"Balcony",x:25,y:0,width:4,height:8},{name:"Foyer",x:0,y:12,width:6,height:6},{name:"Bedroom",x:6,y:12,width:11,height:11},{name:"Passage",x:17,y:8,width:5,height:4},{name:"Bathroom",x:17,y:12,width:5,height:8}],
@@ -642,7 +848,7 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     for(const y of yCandidates){
       for(const x of xCandidates){
         const candidate=raw.map((room,index)=>({...room,id:`${preset}-${index}-${crypto.randomUUID()}`,x:x+room.x,y:y+room.y}));
-        if(candidate.every(room=>isInside(room.x,room.y,room.width,room.height,setbackCorners(geometry.corners,geometry.setbackMm??0)))) {placed=candidate;break;}
+        if(candidate.every(room=>isInside(room.x,room.y,room.width,room.height,setbackCorners(geometry.corners,getSetbackDistances(geometry))))) {placed=candidate;break;}
       }
       if(placed)break;
     }
@@ -691,35 +897,91 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     return true;
   },[commitGeometry,compassRotation,geometry.corners,openings,rooms]);
 
-  const updateEdgeDimension = useCallback(
-    (edgeName: PlotEdgeName, lengthMm: number) => {
-      commitGeometry((current) => {
-        const edgeByName: Record<PlotEdgeName, [string, string]> = {
-          top: ["corner-tl", "corner-tr"],
-          right: ["corner-tr", "corner-br"],
-          bottom: ["corner-bl", "corner-br"],
-          left: ["corner-tl", "corner-bl"],
-        };
-        const [startId, endId] = edgeByName[edgeName];
-        const start = current.corners.find((corner) => corner.id === startId)!;
-        const end = current.corners.find((corner) => corner.id === endId)!;
-        const currentLength = Math.hypot(end.x - start.x, end.y - start.y);
-        const directionX = currentLength > 0 ? (end.x - start.x) / currentLength : 1;
-        const directionY = currentLength > 0 ? (end.y - start.y) / currentLength : 0;
-        const corners=current.corners.map((corner) =>
-            corner.id === endId
-              ? {
-                  ...corner,
-                  x: start.x + directionX * lengthMm,
-                  y: start.y + directionY * lengthMm,
-                }
-              : corner,
-          );
-        return allRoomsFit(current,setbackCorners(corners,current.setbackMm??0))?{...current,corners}:current;
-      });
-    },
-    [commitGeometry,isInside],
-  );
+  const updateEdgeLength = useCallback((edgeId:string,lengthMm:number):boolean=>{
+    if(!Number.isFinite(lengthMm)||lengthMm<1)return false;
+    const current=geometryRef.current,index=current.corners.findIndex((corner,i)=>`edge-${corner.id}-${current.corners[(i+1)%current.corners.length].id}`===edgeId);
+    if(index<0)return false;
+    const start=current.corners[index],end=current.corners[(index+1)%current.corners.length],oldLength=Math.hypot(end.x-start.x,end.y-start.y)||1;
+    if(Math.abs(oldLength-lengthMm)<.01)return true;
+    const ratio=lengthMm/oldLength;
+    const corners=current.corners.map((corner,i)=>i===(index+1)%current.corners.length?{...corner,x:start.x+(end.x-start.x)*ratio,y:start.y+(end.y-start.y)*ratio}:corner);
+    if(!hasValidBoundary(corners)||!allRoomsFit(current,setbackCorners(corners,getSetbackDistances(current))))return false;
+    commitGeometry(value=>withEditedBoundary(value,corners));return true;
+  },[commitGeometry,isInside]);
+  const splitBoundaryEdge=useCallback((edgeId:string):boolean=>{
+    const current=geometryRef.current,index=current.corners.findIndex((corner,i)=>`edge-${corner.id}-${current.corners[(i+1)%current.corners.length].id}`===edgeId);
+    if(index<0)return false;
+    const start=current.corners[index],end=current.corners[(index+1)%current.corners.length],letter=String.fromCharCode(65+current.corners.length);
+    const addedCorner={id:`corner-${crypto.randomUUID()}`,name:letter,x:(start.x+end.x)/2,y:(start.y+end.y)/2};
+    const next=[...current.corners.slice(0,index+1),addedCorner,...current.corners.slice(index+1)];
+    if(!hasValidBoundary(next)||!allRoomsFit(current,setbackCorners(next,getSetbackDistances(current))))return false;
+    commitGeometry(value=>withEditedBoundary(value,next));setSelectedEdgeId(null);setSelectedCornerId(addedCorner.id);setSelectedPropertyCardId(`corner-${addedCorner.id}`);return true;
+  },[commitGeometry,isInside]);
+  const removeBoundaryCorner=useCallback((cornerId:string):boolean=>{
+    const current=geometryRef.current;if(current.corners.length<=3)return false;
+    const next=current.corners.filter(corner=>corner.id!==cornerId);
+    if(next.length===current.corners.length||!hasValidBoundary(next)||!allRoomsFit(current,setbackCorners(next,getSetbackDistances(current))))return false;
+    commitGeometry(value=>withEditedBoundary(value,next));setSelectedEdgeId(null);setSelectedCornerId(null);setSelectedPropertyCardId(null);return true;
+  },[commitGeometry,isInside]);
+  const importSurveyBoundary=useCallback((corners:PlotCorner[],survey:Omit<SurveyMetadata,"importedAt">):boolean=>{
+    const current=geometryRef.current;
+    if(!hasValidBoundary(corners)||!allRoomsFit(current,setbackCorners(corners,getSetbackDistances(current))))return false;
+    const metadata:SurveyMetadata={...survey,importedAt:new Date().toISOString()};
+    commitGeometry(value=>({...value,corners,survey:metadata}));
+    setSelectedEdgeId(null);setSelectedCornerId(null);setSelectedPropertyCardId(null);return true;
+  },[commitGeometry,isInside]);
+
+  const updateRoomWallThickness=useCallback((roomId:string,side:WallSide,thicknessMm:number)=>{
+    if(!Number.isFinite(thicknessMm)||thicknessMm<0)return false;
+    const activeRoom=geometryRef.current.rooms?.find(room=>room.id===roomId);
+    if(!activeRoom)return false;
+    const activeRooms=geometryRef.current.rooms??[];
+    const otherSide=({top:"bottom",right:"left",bottom:"top",left:"right"} as Record<WallSide,WallSide>)[side];
+    const adjoiningIds=new Set(getAttachedRoomWallSegments(activeRoom,side,activeRooms).map(segment=>segment.room.id));
+    const affectedIds=new Set([roomId,...adjoiningIds]);
+    const candidateRooms=activeRooms.map(room=>room.id===roomId
+      ?{...room,wallThicknesses:{...room.wallThicknesses,[side]:thicknessMm}}
+      :adjoiningIds.has(room.id)?{...room,wallThicknesses:{...room.wallThicknesses,[otherSide]:thicknessMm}}:room);
+    if(candidateRooms.filter(room=>affectedIds.has(room.id)).some(room=>room.width-getRoomWallInset(room,"left",candidateRooms)-getRoomWallInset(room,"right",candidateRooms)<300||room.height-getRoomWallInset(room,"top",candidateRooms)-getRoomWallInset(room,"bottom",candidateRooms)<300))return false;
+    commitGeometry(current=>{
+      const rooms=(current.rooms??[]).map(room=>room.id===roomId
+        ?{...room,wallThicknesses:{...room.wallThicknesses,[side]:thicknessMm}}
+        :adjoiningIds.has(room.id)?{...room,wallThicknesses:{...room.wallThicknesses,[otherSide]:thicknessMm}}:room);
+      const activeId=current.activeFloorId??"floor-1";
+      return {...current,rooms,floors:current.floors?.map(floor=>floor.id===activeId?{...floor,rooms}:floor)};
+    });
+    return true;
+  },[commitGeometry]);
+
+  const addSiteFeature=useCallback((kind:SiteFeatureKind):boolean=>{
+    const sizes:Record<SiteFeatureKind,{width:number;height:number;name:string}>={
+      "building-footprint":{width:10000,height:8000,name:"Building footprint"},driveway:{width:3500,height:7000,name:"Driveway"},parking:{width:2700,height:5400,name:"Parking bay"},walkway:{width:1500,height:5000,name:"Walkway"},landscape:{width:5000,height:3000,name:"Landscape area"},tree:{width:1200,height:1200,name:"Tree"},utility:{width:1200,height:1200,name:"Utility point"},easement:{width:5000,height:3000,name:"Easement"},other:{width:3000,height:2000,name:"Site feature"},
+    };
+    const size=sizes[kind],current=geometryRef.current;
+    const minX=Math.min(...current.corners.map(point=>point.x)),maxX=Math.max(...current.corners.map(point=>point.x)),minY=Math.min(...current.corners.map(point=>point.y)),maxY=Math.max(...current.corners.map(point=>point.y));
+    const step=Math.max(500,(Math.max(maxX-minX,maxY-minY))/60);let position:{x:number;y:number}|null=null;
+    const center={x:(minX+maxX-size.width)/2,y:(minY+maxY-size.height)/2};
+    if(isInside(center.x,center.y,size.width,size.height,current.corners))position=center;
+    for(let y=minY;!position&&y+size.height<=maxY;y+=step)for(let x=minX;!position&&x+size.width<=maxX;x+=step)if(isInside(x,y,size.width,size.height,current.corners))position={x,y};
+    if(!position)return false;
+    const sameKind=(current.siteFeatures??[]).filter(feature=>feature.kind===kind).length;
+    const feature:SiteFeature={id:crypto.randomUUID(),kind,name:`${size.name}${sameKind?` ${sameKind+1}`:""}`,status:"proposed",...position,width:size.width,height:size.height};
+    commitGeometry(value=>({...value,siteFeatures:[...(value.siteFeatures??[]),feature]}));selectSiteFeature(feature.id);return true;
+  },[commitGeometry,isInside,selectSiteFeature]);
+  const updateSiteFeature=useCallback((id:string,changes:Partial<Omit<SiteFeature,"id"|"kind">>):boolean=>{
+    const current=geometryRef.current,feature=(current.siteFeatures??[]).find(item=>item.id===id);if(!feature)return false;
+    const next={...feature,...changes};
+    if(!next.name.trim()||![next.x,next.y,next.width,next.height].every(Number.isFinite)||next.width<=0||next.height<=0||!["existing","proposed","removed"].includes(next.status)||!isInside(next.x,next.y,next.width,next.height,current.corners))return false;
+    commitGeometry(value=>({...value,siteFeatures:(value.siteFeatures??[]).map(item=>item.id===id?next:item)}));return true;
+  },[commitGeometry,isInside]);
+  const moveSiteFeature=useCallback((id:string,center:Point):boolean=>{
+    const feature=(geometryRef.current.siteFeatures??[]).find(item=>item.id===id);if(!feature)return false;
+    return updateSiteFeature(id,{x:center.x-feature.width/2,y:center.y-feature.height/2});
+  },[updateSiteFeature]);
+  const removeSiteFeature=useCallback((id:string)=>{
+    commitGeometry(current=>({...current,siteFeatures:(current.siteFeatures??[]).filter(feature=>feature.id!==id)}));
+    if(selectedSiteFeatureId===id)selectSiteFeature(null);
+  },[commitGeometry,selectedSiteFeatureId,selectSiteFeature]);
 
   const resetPlot = useCallback(() => {
     commitGeometry(() => ({ corners: createPlot(DEFAULT_PLOT_DIMENSIONS_MM).corners }));
@@ -735,9 +997,20 @@ export function PlotProvider({ children }: { children: ReactNode }) {
         metrics,
         building,
         setbackMm,
+        setbackDistances,
         setSetbackMm,
+        setSetbackDistance,
+        setSetbackDistances,
         rooms,
+        siteFeatures,
+        selectedSiteFeatureId,
+        selectSiteFeature,
+        addSiteFeature,
+        updateSiteFeature,
+        moveSiteFeature,
+        removeSiteFeature,
         openings,
+        planObjects,
         floorPlans,
         groundLevel,
         activeFloorId,
@@ -755,6 +1028,14 @@ export function PlotProvider({ children }: { children: ReactNode }) {
         projects,
         activeProjectId,
         activeProjectName:projects.find(project=>project.id===activeProjectId)?.name??"Site plan",
+        projectDetails,
+        updateProjectDetails,
+        assumptions,
+        issues,
+        addProjectIssue,
+        addProjectAssumption,
+        updateProjectAssumption,
+        removeProjectAssumption,
         switchProject,
         createProject,
         renameProject,
@@ -762,8 +1043,17 @@ export function PlotProvider({ children }: { children: ReactNode }) {
         exportProject,
         importProject,
         selectedEdgeId,
+        selectedRoomWall,
+        selectRoomWall,
+        selectedPropertyCardId,
+        selectPropertyCard:setSelectedPropertyCardId,
+        updateRoomWallThickness,
         selectedCornerId,
-        updateEdgeDimension,
+        updateEdgeLength,
+        splitBoundaryEdge,
+        removeBoundaryCorner,
+        surveyMetadata,
+        importSurveyBoundary,
         updateCornerPosition,
         updateBuildingPosition,
         updateBuildingSize,
@@ -775,6 +1065,9 @@ export function PlotProvider({ children }: { children: ReactNode }) {
         addOpening,
         removeOpening,
         moveOpening,
+        addPlanObject,
+        movePlanObject,
+        removePlanObject,
         removeFloorPlan,
         applyFloorPlanPreset,
         canUndo:historyRef.current.past.length>0,
@@ -782,8 +1075,8 @@ export function PlotProvider({ children }: { children: ReactNode }) {
         undo,
         redo,
         resetPlot,
-        selectEdge: setSelectedEdgeId,
-        selectCorner: setSelectedCornerId,
+        selectEdge,
+        selectCorner,
       }}
     >
       {children}

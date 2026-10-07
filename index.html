@@ -4,9 +4,19 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>siteplan-designer</title>
+    <meta name="theme-color" content="#fbfcf9" />
+    <meta name="description" content="Plan a site, shape a floor plan, and see how it fits together. SitePlan Designer is a free planning tool with no signup required." />
+    <title>SitePlan Designer — Free site planning tool</title>
   </head>
   <body>
+    <form name="contact" data-netlify="true" data-netlify-honeypot="bot-field" hidden>
+      <input type="hidden" name="form-name" value="contact" />
+      <input name="bot-field" />
+      <input name="name" />
+      <input name="email" />
+      <select name="topic"><option>Report an issue</option></select>
+      <textarea name="message"></textarea>
+    </form>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

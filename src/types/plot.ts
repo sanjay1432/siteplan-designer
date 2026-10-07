@@ -9,8 +9,8 @@ export type PlotEdgeName = "top" | "right" | "bottom" | "left";
 
 export interface PlotEdge {
   id: string;
-  name: PlotEdgeName;
-  label: string; // "Top", "Right", "Bottom", "Left"
+  name: string;
+  label: string;
   startCornerId: string;
   endCornerId: string;
   targetLengthMm: number; // Canonical target length in mm

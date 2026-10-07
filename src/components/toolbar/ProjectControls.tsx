@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
-import { Download, FolderPlus, Pencil, Trash2, Upload } from "lucide-react";
+import { Download, FileText, FolderPlus, Pencil, Trash2, Upload } from "lucide-react";
 import { usePlot } from "../../geometry/plot/PlotContext";
-import { exportProjectJson } from "../../lib/sitePlanExport";
+import { exportProjectJson, printProjectReport } from "../../lib/sitePlanExport";
 
 export function ProjectControls() {
-  const { projects, activeProjectId, activeProjectName, switchProject, createProject, renameProject, deleteProject, exportProject, importProject } = usePlot();
+  const { projects, activeProjectId, activeProjectName, switchProject, createProject, renameProject, deleteProject, exportProject, importProject, plot, metrics, setbackDistances, compassRotation, floorPlans, groundLevel, measurements, projectDetails, assumptions, issues, surveyMetadata, siteFeatures } = usePlot();
   const fileRef = useRef<HTMLInputElement>(null);
   const [notice,setNotice]=useState("");
 
@@ -29,6 +29,7 @@ export function ProjectControls() {
     <button type="button" onClick={()=>{const next=window.prompt("Project name",activeProjectName);if(next)renameProject(next);}} title="Rename project" className="inline-flex items-center rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-50" aria-label="Rename project"><Pencil className="size-3.5"/></button>
     <button type="button" onClick={()=>{if(window.confirm(`Delete “${activeProjectName}”?`))deleteProject();}} title="Delete project" className="inline-flex items-center rounded-md border border-slate-200 bg-white p-1.5 text-red-600 hover:bg-red-50" aria-label="Delete project"><Trash2 className="size-3.5"/></button>
     <button type="button" onClick={()=>exportProjectJson(activeProjectName,exportProject())} title="Download editable project JSON backup" className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1.5 text-xs font-medium text-white hover:bg-blue-700"><Download className="size-3.5"/><span className="hidden sm:inline">Export JSON</span></button>
+    <button type="button" onClick={()=>{const ok=printProjectReport({name:activeProjectName,corners:plot.corners,boundaryEdges:plot.edges.map(edge=>({label:edge.label,lengthMm:edge.actualLengthMm})),metrics,setbacks:setbackDistances,compassRotation,floors:[groundLevel,...floorPlans],measurements,details:projectDetails,assumptions,issues,survey:surveyMetadata,siteFeatures});if(!ok)setNotice("Allow pop-ups to open the report.");}} title="Create a printable project report; save as PDF from the print dialog" className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-800 hover:bg-teal-100"><FileText className="size-3.5"/><span className="hidden sm:inline">Project Report</span></button>
     <button type="button" onClick={()=>fileRef.current?.click()} title="Import a SitePlan project JSON file" className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50"><Upload className="size-3.5"/><span className="hidden sm:inline">Import</span></button>
     <input ref={fileRef} type="file" accept=".json,.siteplan.json,application/json" className="hidden" onChange={event=>void importFile(event.target.files?.[0])}/>
     {notice && <span role="status" className="max-w-48 text-[10px] text-slate-500">{notice}</span>}

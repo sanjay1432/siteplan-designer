@@ -22,9 +22,9 @@ export function SitePlanEditor() {
             {/* Main CAD Toolbar */}
             <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-white px-3 py-2 sm:px-4">
               <div className="flex items-center gap-2 sm:gap-3">
-                <span className="font-semibold text-slate-900 tracking-tight">
+                <a href="/" className="font-semibold text-slate-900 tracking-tight hover:text-blue-700">
                   SitePlan Designer
-                </span>
+                </a>
                 <span className="hidden rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500 font-mono md:inline">
                   100′ × 100′ Workspace
                 </span>
@@ -36,6 +36,8 @@ export function SitePlanEditor() {
                 <button type="button" role="tab" aria-selected={activeModule==="3d"} onClick={()=>setActiveModule("3d")} className={`rounded px-2 py-1 text-xs font-medium ${activeModule==="3d"?"bg-white text-blue-700 shadow-sm":"text-slate-600 hover:text-slate-900"}`}>3D House</button>
               </div>
               <GettingStartedTour />
+
+              <a href="/contact" className="text-xs text-slate-500 hover:text-blue-700">Contact</a>
 
               {activeModule==="2d" && <div className="ml-auto flex items-center gap-2 sm:gap-3">
                 <UnitSelector />

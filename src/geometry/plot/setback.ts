@@ -1,12 +1,25 @@
 export interface PlanPoint { x:number; y:number }
+export type RectangleInsets={top:number;right:number;bottom:number;left:number};
+
+/** Offset each ordered boundary edge inward by its own perpendicular setback. */
+export function rectangularSetback(points:PlanPoint[],insets:RectangleInsets):PlanPoint[]{
+  return offsetPolygonInwardByEdgeDistances(points,[insets.top,insets.right,insets.bottom,insets.left]);
+}
 
 /** Offset a simple polygon inward by a perpendicular distance in millimetres. */
 export function offsetPolygonInward(points:PlanPoint[],distance:number):PlanPoint[]{
   if(points.length<3||distance<=0)return points;
-  const area=points.reduce((sum,p,index)=>{const next=points[(index+1)%points.length];return sum+p.x*next.y-next.x*p.y;},0)/2;
+  return offsetPolygonInwardByEdgeDistances(points,points.map(()=>distance));
+}
+
+/** Offset each polygon edge inward by its own perpendicular distance. */
+export function offsetPolygonInwardByEdgeDistances(points:PlanPoint[],distances:number[]):PlanPoint[]{
+  if(points.length<3||distances.every(distance=>distance<=0))return points;
+  const origin=points[0];
+  const area=points.reduce((sum,p,index)=>{const next=points[(index+1)%points.length];return sum+(p.x-origin.x)*(next.y-origin.y)-(next.x-origin.x)*(p.y-origin.y);},0)/2;
   const direction=area>=0?1:-1;
   const lines=points.map((start,index)=>{
-    const end=points[(index+1)%points.length],dx=end.x-start.x,dy=end.y-start.y,length=Math.hypot(dx,dy)||1;
+    const end=points[(index+1)%points.length],dx=end.x-start.x,dy=end.y-start.y,length=Math.hypot(dx,dy)||1,distance=Math.max(0,distances[index]??0);
     return {x:start.x-direction*dy/length*distance,y:start.y+direction*dx/length*distance,dx,dy};
   });
   return points.map((_,index)=>{
