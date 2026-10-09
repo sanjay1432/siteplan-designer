@@ -32,11 +32,12 @@ export function SiteCanvas() {
   const draggingCornerRef = useRef<string | null>(null);
   const draggingRoomRef = useRef<{id:string; origin:Point; center:Point} | null>(null);
   const draggingPlanRef = useRef<Point|null>(null);
-  const resizingRoomRef = useRef<{id:string; corner:number; room:{x:number;y:number;width:number;height:number}} | null>(null);
+  const resizingRoomRef = useRef<{id:string; corner:number; room:{x:number;y:number;width:number;height:number;points?:Point[]}} | null>(null);
   const draggingOpeningRef = useRef<string|null>(null);
   const draggingPlanObjectRef=useRef<{id:string;offset:Point}|null>(null);
   const draggingSetbackRef=useRef<{corner:number;origin:Point;starts:Record<PlotEdgeName,number>}|null>(null);
   const draggingSiteFeatureRef=useRef<{id:string;offset:Point}|null>(null);
+  const draggingRoomLabelRef=useRef<{id:string;origin:Point;offset:Point}|null>(null);
 
   const {
     viewport,
@@ -46,8 +47,10 @@ export function SiteCanvas() {
   } = useViewport();
 
   const { format, unitSystem } = useUnits();
-  const { plot, updateCornerPosition, rooms, openings, planObjects, movePlanObject, siteFeatures, moveSiteFeature, selectSiteFeature, moveOpening, moveRoom, moveFloorPlan, resizeRoom, measurements, setMeasurements, activeProjectId, activeProjectName, compassRotation, rotateCompass, resetCompass, setbackDistances, setSetbackDistances, selectPropertyCard, selectCorner, selectedSiteFeatureId } = usePlot();
+  const { plot, updateCornerPosition, rooms, openings, planObjects, movePlanObject, siteFeatures, moveSiteFeature, selectSiteFeature, moveOpening, moveRoom, moveRoomLabel, moveFloorPlan, resizeRoom, setRoomPoints, measurements, setMeasurements, activeProjectId, activeProjectName, compassRotation, rotateCompass, resetCompass, setbackDistances, setSetbackDistances, selectPropertyCard, selectCorner, selectedSiteFeatureId } = usePlot();
   const [measureMode, setMeasureMode] = useState(false);
+  const [measureToolbarVisible, setMeasureToolbarVisible] = useState(true);
+  const [measurementHistoryToolbarVisible, setMeasurementHistoryToolbarVisible] = useState(true);
   const measurementPastRef = useRef<Array<Array<{start:Point;end:Point}>>>([]);
   const measurementFutureRef = useRef<Array<Array<{start:Point;end:Point}>>>([]);
   const [pendingMeasure, setPendingMeasure] = useState<Point|null>(null);
@@ -56,6 +59,8 @@ export function SiteCanvas() {
   const [moveAxis, setMoveAxis] = useState<"free"|"x"|"y">("free");
   const [moveWholePlan, setMoveWholePlan] = useState(false);
   const [selectedRoomId, setSelectedRoomId] = useState<string|null>(null);
+  const [selectedRoomEdge,setSelectedRoomEdge]=useState<{roomId:string;edge:number}|null>(null);
+  const [selectedRoomCorner,setSelectedRoomCorner]=useState<{roomId:string;corner:number}|null>(null);
   const [exportMenuOpen,setExportMenuOpen]=useState(false);
   const [exportNotice,setExportNotice]=useState("");
   const updateMeasurements = useCallback((update:(current:Array<{start:Point;end:Point}>)=>Array<{start:Point;end:Point}>) => setMeasurements(current=>{
@@ -100,6 +105,7 @@ export function SiteCanvas() {
 
   const [cursorWorld, setCursorWorld] = useState<Point>({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [isDraggingRoom, setIsDraggingRoom] = useState(false);
   const [lastMouse, setLastMouse] = useState<Point>({ x: 0, y: 0 });
 
   const updateCursorPosition = (event: React.MouseEvent<SVGSVGElement>) => {
@@ -176,14 +182,15 @@ export function SiteCanvas() {
 
   const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     const cornerId = draggingCornerRef.current;
-    if (!cornerId && !draggingRoomRef.current && !resizingRoomRef.current && !draggingPlanRef.current && !draggingOpeningRef.current && !draggingSetbackRef.current && !draggingSiteFeatureRef.current && !draggingPlanObjectRef.current) return;
+    if (!cornerId && !draggingRoomRef.current && !draggingRoomLabelRef.current && !resizingRoomRef.current && !draggingPlanRef.current && !draggingOpeningRef.current && !draggingSetbackRef.current && !draggingSiteFeatureRef.current && !draggingPlanObjectRef.current) return;
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
     const point = screenToWorld(
         { x: event.clientX - rect.left, y: event.clientY - rect.top },
         viewport,
       );
-    if(draggingSiteFeatureRef.current){const drag=draggingSiteFeatureRef.current;moveSiteFeature(drag.id,{x:point.x+drag.offset.x,y:point.y+drag.offset.y});}
+    if(draggingRoomLabelRef.current){const drag=draggingRoomLabelRef.current;moveRoomLabel(drag.id,{x:drag.offset.x+point.x-drag.origin.x,y:drag.offset.y+point.y-drag.origin.y});}
+    else if(draggingSiteFeatureRef.current){const drag=draggingSiteFeatureRef.current;moveSiteFeature(drag.id,{x:point.x+drag.offset.x,y:point.y+drag.offset.y});}
     else if(draggingPlanObjectRef.current){const drag=draggingPlanObjectRef.current;movePlanObject(drag.id,{x:point.x+drag.offset.x,y:point.y+drag.offset.y});}
     else if(draggingSetbackRef.current){const drag=draggingSetbackRef.current,dx=point.x-drag.origin.x,dy=point.y-drag.origin.y,next={...drag.starts};
       if(drag.corner===0){next.left=Math.max(0,drag.starts.left+dx);next.top=Math.max(0,drag.starts.top+dy);}
@@ -201,10 +208,16 @@ export function SiteCanvas() {
     }
     else if (resizingRoomRef.current) {
       const {id,corner,room}=resizingRoomRef.current; const min=500;
-      if(corner===0) resizeRoom(id,Math.min(point.x,room.x+room.width-min),Math.min(point.y,room.y+room.height-min),Math.max(min,room.x+room.width-point.x),Math.max(min,room.y+room.height-point.y));
-      if(corner===1) resizeRoom(id,room.x,Math.min(point.y,room.y+room.height-min),Math.max(min,point.x-room.x),Math.max(min,room.y+room.height-point.y));
-      if(corner===2) resizeRoom(id,room.x,room.y,Math.max(min,point.x-room.x),Math.max(min,point.y-room.y));
-      if(corner===3) resizeRoom(id,Math.min(point.x,room.x+room.width-min),room.y,Math.max(min,room.x+room.width-point.x),Math.max(min,point.y-room.y));
+      if(room.points){const vertices=room.points,origin=vertices[corner],previous=vertices[(corner+vertices.length-1)%vertices.length],next=vertices[(corner+1)%vertices.length];let x=point.x,y=point.y;
+        if(event.shiftKey){if(Math.abs(x-origin.x)>=Math.abs(y-origin.y))y=origin.y;else x=origin.x;}
+        const snap=10/viewport.zoom;
+        const alignedX=[previous.x,next.x].find(value=>Math.abs(value-x)<=snap),alignedY=[previous.y,next.y].find(value=>Math.abs(value-y)<=snap);
+        if(alignedX!==undefined)x=alignedX;if(alignedY!==undefined)y=alignedY;
+        const adjusted={x,y};setRoomPoints(id,vertices.map((p,i)=>i===corner?adjusted:p));}
+      else if(corner===0) resizeRoom(id,Math.min(point.x,room.x+room.width-min),Math.min(point.y,room.y+room.height-min),Math.max(min,room.x+room.width-point.x),Math.max(min,room.y+room.height-point.y));
+      else if(corner===1) resizeRoom(id,room.x,Math.min(point.y,room.y+room.height-min),Math.max(min,point.x-room.x),Math.max(min,room.y+room.height-point.y));
+      else if(corner===2) resizeRoom(id,room.x,room.y,Math.max(min,point.x-room.x),Math.max(min,point.y-room.y));
+      else if(corner===3) resizeRoom(id,Math.min(point.x,room.x+room.width-min),room.y,Math.max(min,room.x+room.width-point.x),Math.max(min,point.y-room.y));
     } else if (draggingRoomRef.current) {
       const drag=draggingRoomRef.current;
       const dx=point.x-drag.origin.x,dy=point.y-drag.origin.y;
@@ -215,12 +228,14 @@ export function SiteCanvas() {
   const handlePointerUp = () => {
     draggingCornerRef.current = null;
     draggingRoomRef.current = null;
+    draggingRoomLabelRef.current=null;
     draggingPlanRef.current = null;
     resizingRoomRef.current = null;
     draggingOpeningRef.current = null;
     draggingPlanObjectRef.current=null;
     draggingSetbackRef.current=null;
     draggingSiteFeatureRef.current=null;
+    setIsDraggingRoom(false);
   };
 
   const pointFromPointer = (event: { clientX: number; clientY: number }) => {
@@ -312,7 +327,9 @@ export function SiteCanvas() {
                 draggingSetbackRef.current={corner,origin,starts:{...setbackDistances}};
                 selectPropertyCard(`setback-${edge}`);svgRef.current?.setPointerCapture(event.pointerId);
               }}
-              selectedRoomId={selectedRoomId}
+              selectedRoomId={isDraggingRoom?null:selectedRoomId}
+              onRoomEdgeSelect={(id,edge,event)=>{event.preventDefault();setSelectedRoomEdge({roomId:id,edge});}}
+              onRoomLabelPointerDown={(id,event)=>{event.preventDefault();event.stopPropagation();const origin=pointFromPointer(event),room=rooms.find(item=>item.id===id);if(!origin||!room)return;draggingRoomLabelRef.current={id,origin,offset:room.labelOffset??{x:0,y:0}};svgRef.current?.setPointerCapture(event.pointerId);}}
               onRoomPointerDown={(id,event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -322,12 +339,14 @@ export function SiteCanvas() {
                 if(!room||!origin)return;
                 if(moveWholePlan) draggingPlanRef.current=origin;
                 else draggingRoomRef.current = {id,origin,center:{x:room.x+room.width/2,y:room.y+room.height/2}};
+                setIsDraggingRoom(true);
                 svgRef.current?.setPointerCapture(event.pointerId);
               }}
               onRoomResizePointerDown={(id,corner,event)=>{
                 event.preventDefault();event.stopPropagation();
+                setSelectedRoomCorner({roomId:id,corner});
                 const room=rooms.find(item=>item.id===id);if(!room)return;
-                resizingRoomRef.current={id,corner,room:{x:room.x,y:room.y,width:room.width,height:room.height}};
+                resizingRoomRef.current={id,corner,room:{x:room.x,y:room.y,width:room.width,height:room.height,points:room.points??[{x:room.x,y:room.y},{x:room.x+room.width,y:room.y},{x:room.x+room.width,y:room.y+room.height},{x:room.x,y:room.y+room.height}]}};
                 svgRef.current?.setPointerCapture(event.pointerId);
               }}
             />
@@ -357,6 +376,9 @@ export function SiteCanvas() {
 
       {/* Zoom indicator */}
       <div className="absolute left-2 right-auto top-2 z-10 flex max-w-[calc(100%-1rem)] flex-wrap items-center gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-sm sm:left-4 sm:top-4">
+        <button type="button" onClick={()=>setMeasureToolbarVisible(value=>!value)} aria-expanded={measureToolbarVisible} className="rounded px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">{measureToolbarVisible?"Hide tools":"Show tools"}</button>
+        {measureToolbarVisible && <>
+        <button type="button" onClick={()=>setMeasurementHistoryToolbarVisible(value=>!value)} aria-expanded={measurementHistoryToolbarVisible} className="rounded px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">{measurementHistoryToolbarVisible?"Hide line history":"Show line history"}</button>
         <button type="button" onClick={() => {setMeasureMode(v=>!v);setPendingMeasure(null);setSelectedMeasurement(null);}} className={`rounded px-2 py-1.5 text-xs font-medium ${measureMode ? "bg-amber-50 text-amber-800" : "text-slate-700 hover:bg-slate-50"}`}>
           {measureMode ? (pendingMeasure ? "Click second point…" : "Click first point…") : "Measure"}
         </button>
@@ -364,8 +386,11 @@ export function SiteCanvas() {
         <span className="mx-1 h-4 w-px bg-slate-200" />
         {([["free","Free"],["x","X only"],["y","Y only"]] as const).map(([axis,label])=><button key={axis} type="button" onClick={()=>{setMoveAxis(axis);setMoveWholePlan(false);}} className={`rounded px-2 py-1.5 text-[11px] ${moveAxis===axis&&!moveWholePlan?"bg-slate-800 text-white":"text-slate-600 hover:bg-slate-100"}`} title={`Move rooms on ${axis === "free" ? "both axes" : `${axis.toUpperCase()} axis only`}`}>{label}</button>)}
         <button type="button" onClick={()=>setMoveWholePlan(v=>!v)} className={`rounded px-2 py-1.5 text-[11px] ${moveWholePlan?"bg-emerald-700 text-white":"text-slate-600 hover:bg-slate-100"}`} title="Drag any room to move the entire floor plan">Whole plan</button>
+        {selectedRoomId&&<button type="button" disabled={selectedRoomEdge?.roomId!==selectedRoomId} onClick={()=>{const room=rooms.find(item=>item.id===selectedRoomId);if(!room||selectedRoomEdge?.roomId!==room.id)return;const pts=room.points??[{x:room.x,y:room.y},{x:room.x+room.width,y:room.y},{x:room.x+room.width,y:room.y+room.height},{x:room.x,y:room.y+room.height}];const edge=selectedRoomEdge.edge,a=pts[edge],b=pts[(edge+1)%pts.length];pts.splice(edge+1,0,{x:(a.x+b.x)/2,y:(a.y+b.y)/2});setRoomPoints(room.id,pts);setSelectedRoomEdge(null);}} className="rounded bg-blue-50 px-2 py-1.5 text-[11px] text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40">+ Corner{selectedRoomEdge?.roomId===selectedRoomId?` · edge ${selectedRoomEdge.edge+1}`:" · select edge"}</button>}
+        {selectedRoomId&&<button type="button" disabled={selectedRoomCorner?.roomId!==selectedRoomId||((rooms.find(room=>room.id===selectedRoomId)?.points?.length??4)<=3)} onClick={()=>{const room=rooms.find(item=>item.id===selectedRoomId);if(!room||selectedRoomCorner?.roomId!==room.id)return;const pts=room.points??[{x:room.x,y:room.y},{x:room.x+room.width,y:room.y},{x:room.x+room.width,y:room.y+room.height},{x:room.x,y:room.y+room.height}];if(pts.length<=3)return;pts.splice(selectedRoomCorner.corner,1);setRoomPoints(room.id,pts);setSelectedRoomCorner(null);setSelectedRoomEdge(null);}} className="rounded bg-red-50 px-2 py-1.5 text-[11px] text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40">Remove corner{selectedRoomCorner?.roomId===selectedRoomId?` · ${selectedRoomCorner.corner+1}`:" · select corner"}</button>}
+        </>}
       </div>
-      {(measurements.length > 0 || measurementPastRef.current.length > 0 || measurementFutureRef.current.length > 0) && <div className="absolute left-2 top-20 z-10 flex items-center gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-sm sm:left-4 sm:top-16">
+      {measureToolbarVisible && measurementHistoryToolbarVisible && (measurements.length > 0 || measurementPastRef.current.length > 0 || measurementFutureRef.current.length > 0) && <div className="absolute left-2 top-20 z-10 flex items-center gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-sm sm:left-4 sm:top-16">
         <button type="button" onClick={undoMeasurement} disabled={!measurementPastRef.current.length} className="rounded px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 disabled:opacity-40">Undo line</button>
         <button type="button" onClick={redoMeasurement} disabled={!measurementFutureRef.current.length} className="rounded px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 disabled:opacity-40">Redo line</button>
         <button type="button" onClick={()=>{if(selectedMeasurement===null)return;updateMeasurements(lines=>lines.filter((_,index)=>index!==selectedMeasurement));setSelectedMeasurement(null);}} disabled={selectedMeasurement===null} className="rounded px-2 py-1 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-40">Remove selected</button>

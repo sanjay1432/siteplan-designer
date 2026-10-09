@@ -100,9 +100,12 @@ interface PlotContextValue {
   updateBuildingSize: (width: number, height: number) => void;
   addRoom: (room: Omit<Room, "id">) => void;
   moveRoom: (id: string, point: Point) => void;
+  moveRoomLabel: (id:string,offset:Point)=>void;
   moveFloorPlan: (delta: Point) => void;
-  resizeRoom: (id: string, x: number, y: number, width: number, height: number) => void;
+  resizeRoom: (id: string, x: number, y: number, width: number, height: number) => boolean;
+  setRoomPoints:(id:string,points:Point[])=>void;
   removeRoom: (id: string) => void;
+  renameRoom: (id: string, name: string) => void;
   addOpening: (roomId:string, type:PlanOpening["type"], side:WallSide) => void;
   removeOpening: (id:string) => void;
   moveOpening: (id:string, point:Point) => void;
@@ -175,7 +178,7 @@ function isPlotGeometry(value: unknown): value is PlotGeometry {
   const survey=geometry.survey as Record<string,unknown>|undefined;
   if(survey!==undefined&&(!survey||typeof survey!=="object"||typeof survey.sourceFile!=="string"||typeof survey.coordinateReference!=="string"||!["mm","m","ft"].includes(String(survey.coordinateUnit))||typeof survey.originX!=="number"||!Number.isFinite(survey.originX)||typeof survey.originY!=="number"||!Number.isFinite(survey.originY)||typeof survey.importedAt!=="string"||(survey.designBoundaryEditedAt!==undefined&&typeof survey.designBoundaryEditedAt!=="string")||!Array.isArray(survey.sourcePoints)||survey.sourcePoints.some(item=>!item||typeof item!=="object"||typeof (item as Record<string,unknown>).name!=="string"||typeof (item as Record<string,unknown>).x!=="number"||!Number.isFinite((item as Record<string,unknown>).x)||typeof (item as Record<string,unknown>).y!=="number"||!Number.isFinite((item as Record<string,unknown>).y))))return false;
   const features=geometry.siteFeatures;
-  if(features!==undefined&&(!Array.isArray(features)||features.some(item=>!item||typeof item!=="object"||typeof item.id!=="string"||typeof item.name!=="string"||!["building-footprint","driveway","parking","walkway","landscape","tree","utility","easement","other"].includes(item.kind)||!["existing","proposed","removed"].includes(item.status)||(item.visible!==undefined&&typeof item.visible!=="boolean")||![item.x,item.y,item.width,item.height].every(value=>typeof value==="number"&&Number.isFinite(value))||item.width<=0||item.height<=0)))return false;
+  if(features!==undefined&&(!Array.isArray(features)||features.some(item=>!item||typeof item!=="object"||typeof item.id!=="string"||typeof item.name!=="string"||!["building-footprint","driveway","parking","walkway","landscape","lawn","tree","utility","easement","other"].includes(item.kind)||!["existing","proposed","removed"].includes(item.status)||(item.visible!==undefined&&typeof item.visible!=="boolean")||![item.x,item.y,item.width,item.height].every(value=>typeof value==="number"&&Number.isFinite(value))||item.width<=0||item.height<=0)))return false;
   return true;
 }
 
@@ -186,7 +189,7 @@ function isPoint(value:unknown):value is Point {
 function isRoom(value:unknown):value is Room{
   if(!value||typeof value!=="object")return false;
   const room=value as Record<string,unknown>,walls=room.wallThicknesses as Record<string,unknown>|undefined;
-  return typeof room.id==="string"&&typeof room.name==="string"&&room.name.trim().length>0&&(room.kind===undefined||room.kind==="room"||room.kind==="stairs")&&[room.x,room.y,room.width,room.height].every(dimension=>typeof dimension==="number"&&Number.isFinite(dimension))&&Number(room.width)>0&&Number(room.height)>0&&
+  return typeof room.id==="string"&&typeof room.name==="string"&&room.name.trim().length>0&&(room.kind===undefined||room.kind==="room"||room.kind==="stairs"||room.kind==="lawn")&&(room.labelOffset===undefined||!!room.labelOffset&&typeof room.labelOffset.x==="number"&&Number.isFinite(room.labelOffset.x)&&typeof room.labelOffset.y==="number"&&Number.isFinite(room.labelOffset.y))&&[room.x,room.y,room.width,room.height].every(dimension=>typeof dimension==="number"&&Number.isFinite(dimension))&&Number(room.width)>0&&Number(room.height)>0&&
     (walls===undefined||!!walls&&["top","right","bottom","left"].every(side=>walls[side]===undefined||typeof walls[side]==="number"&&Number.isFinite(walls[side])&&Number(walls[side])>=0));
 }
 function isPlanObject(value:unknown):value is PlanObject{
@@ -228,7 +231,7 @@ function isSavedProject(value:unknown):value is SavedProject {
 function isLegacyRoom(value:unknown):value is Room{
   if(!value||typeof value!=="object")return false;
   const room=value as Record<string,unknown>,walls=room.wallThicknesses as Record<string,unknown>|undefined;
-  return typeof room.id==="string"&&typeof room.name==="string"&&(room.kind===undefined||room.kind==="room"||room.kind==="stairs")&&[room.x,room.y,room.width,room.height].every(number=>typeof number==="number"&&Number.isFinite(number))&&Number(room.width)>0&&Number(room.height)>0&&
+  return typeof room.id==="string"&&typeof room.name==="string"&&(room.kind===undefined||room.kind==="room"||room.kind==="stairs"||room.kind==="lawn")&&[room.x,room.y,room.width,room.height].every(number=>typeof number==="number"&&Number.isFinite(number))&&Number(room.width)>0&&Number(room.height)>0&&
     (walls===undefined||!!walls&&["top","right","bottom","left"].every(side=>walls[side]===undefined||typeof walls[side]==="number"&&Number.isFinite(walls[side])&&Number(walls[side])>=0));
 }
 function isLegacyOpening(value:unknown):boolean{
@@ -744,39 +747,65 @@ export function PlotProvider({ children }: { children: ReactNode }) {
     const rooms=existing.map(room => {
       if (room.id !== id) return room;
       const x = point.x - room.width / 2, y = point.y - room.height / 2;
-      return isInside(x, y, room.width, room.height, setbackCorners(current.corners,getSetbackDistances(current))) ? { ...room, x, y } : room;
+      const dx=x-room.x,dy=y-room.y;
+      return isInside(x, y, room.width, room.height, setbackCorners(current.corners,getSetbackDistances(current))) ? { ...room, x, y, ...(room.points?{points:room.points.map(p=>({x:p.x+dx,y:p.y+dy}))}:{}) } : room;
     });
     return existing.find(room=>room.id===id)?.kind==="stairs"?syncStairwellGeometry(current,rooms):{...current,rooms};
   }), [building.x, building.y, building.width, building.height, commitGeometry]);
+  const setRoomPoints=useCallback((id:string,points:Point[])=>commitGeometry(current=>{
+    if(points.length<3||points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return current;
+    const existing=current.rooms??[];const room=existing.find(item=>item.id===id);if(!room)return current;
+    const minX=Math.min(...points.map(p=>p.x)),maxX=Math.max(...points.map(p=>p.x)),minY=Math.min(...points.map(p=>p.y)),maxY=Math.max(...points.map(p=>p.y));
+    const rooms=existing.map(item=>item.id===id?{...item,points,x:minX,y:minY,width:maxX-minX,height:maxY-minY}:item);
+    return {...current,rooms};
+  }),[commitGeometry]);
   const moveFloorPlan = useCallback((delta:Point) => commitGeometry(current=>{
     const rooms=current.rooms ?? [];
-    const moved=rooms.map(room=>({...room,x:room.x+delta.x,y:room.y+delta.y}));
+    const moved=rooms.map(room=>({...room,x:room.x+delta.x,y:room.y+delta.y,...(room.points?{points:room.points.map(point=>({x:point.x+delta.x,y:point.y+delta.y}))}:{})}));
     const boundary=setbackCorners(current.corners,getSetbackDistances(current));
     if(!moved.every(room=>isInside(room.x,room.y,room.width,room.height,boundary)))return current;
     const next=rooms.some(room=>room.kind==="stairs")?syncStairwellGeometry(current,moved):{...current,rooms:moved};
     return updateActiveLevel(next,level=>({...level,objects:(level.objects??[]).map(item=>({...item,x:item.x+delta.x,y:item.y+delta.y}))}));
   }),[commitGeometry]);
-  const resizeRoom = useCallback((id: string, x: number, y: number, width: number, height: number) => commitGeometry(current => {
-    if(![x,y,width,height].every(Number.isFinite)||width<=0||height<=0)return current;
-    const existing = current.rooms ?? [];
-    const boundary=setbackCorners(current.corners,getSetbackDistances(current));
-    const rooms=existing.map(room => room.id !== id ? room : isInside(x, y, width, height, boundary) ? { ...room, x, y, width, height } : room);
-    const resized=rooms.find(room=>room.id===id);
-    if(!resized)return current;
-    const openings=(current.openings??[]).map(opening=>{
-      if(opening.roomId!==id)return opening;
-      const length=opening.side==="top"||opening.side==="bottom"?resized.width:resized.height;
-      const openingWidth=Math.min(opening.width,length);
-      return {...opening,width:openingWidth,offset:Math.min(Math.max(0,opening.offset),length-openingWidth)};
+  const resizeRoom = useCallback((id: string, x: number, y: number, width: number, height: number):boolean => {
+    if(![x,y,width,height].every(Number.isFinite)||width<=0||height<=0)return false;
+    const current=geometryRef.current,existing=current.rooms??[],room=existing.find(item=>item.id===id);
+    if(!room||!isInside(x,y,width,height,setbackCorners(current.corners,getSetbackDistances(current))))return false;
+    commitGeometry(value=>{
+      const rooms=(value.rooms??[]).map(item=>{
+        if(item.id!==id)return item;
+        const points=item.points?.map(point=>({x:x+(item.width?(point.x-item.x)/item.width:0)*width,y:y+(item.height?(point.y-item.y)/item.height:0)*height}));
+        return {...item,x,y,width,height,...(points?{points}:{})};
+      });
+      const resized=rooms.find(item=>item.id===id)!;
+      const openings=(value.openings??[]).map(opening=>{
+        if(opening.roomId!==id)return opening;
+        const length=opening.side==="top"||opening.side==="bottom"?resized.width:resized.height;
+        const previousLength=opening.side==="top"||opening.side==="bottom"?room.width:room.height;
+        const openingWidth=Math.min(opening.width,length),offsetRatio=previousLength>0?opening.offset/previousLength:0;
+        return {...opening,width:openingWidth,offset:Math.min(Math.max(0,offsetRatio*length),length-openingWidth)};
+      });
+      return resized.kind==="stairs"?syncStairwellGeometry({...value,openings},rooms):{...value,rooms,openings};
     });
-    return resized.kind==="stairs"?syncStairwellGeometry({...current,openings},rooms):{...current,rooms,openings};
-  }), [building.x, building.y, building.width, building.height, commitGeometry]);
+    return true;
+  },[commitGeometry,isInside]);
   const removeRoom = useCallback((id: string) => commitGeometry(current => {
     const removed=(current.rooms??[]).find(room=>room.id===id),rooms=(current.rooms??[]).filter(room=>room.id!==id),openings=(current.openings??[]).filter(item=>item.roomId!==id);
     if(removed?.kind!=="stairs")return {...current,rooms,openings};
     const plans=allPlansForGeometry(current).map(floor=>({...floor,rooms:floor.rooms.filter(room=>room.kind!=="stairs"),openings:floor.openings.filter(item=>!floor.rooms.some(room=>room.id===item.roomId&&room.kind==="stairs"))}));
     return {...current,rooms,openings,groundPlan:plans[0],floors:plans.slice(1)};
   }), [commitGeometry]);
+  const moveRoomLabel=useCallback((id:string,offset:Point)=>commitGeometry(current=>{
+    const update=(items:Room[]|undefined)=>items?.map(room=>room.id===id?{...room,labelOffset:offset}:room);
+    return {...current,rooms:update(current.rooms),groundPlan:current.groundPlan?{...current.groundPlan,rooms:update(current.groundPlan.rooms)!}:undefined,floors:current.floors?.map(floor=>({...floor,rooms:update(floor.rooms)!}))};
+  }),[commitGeometry]);
+  const renameRoom = useCallback((id:string,name:string)=>commitGeometry(current=>{
+    const trimmed=name.trim();
+    if(!trimmed)return current;
+    const rooms=(current.rooms??[]).map(room=>room.id===id?{...room,name:trimmed}:room);
+    const updatePlan=(plan:FloorPlanLevel)=>({...plan,rooms:plan.rooms.map(room=>room.id===id?{...room,name:trimmed}:room)});
+    return {...current,rooms,groundPlan:current.groundPlan?updatePlan(current.groundPlan):undefined,floors:current.floors?.map(updatePlan)};
+  }),[commitGeometry]);
   const addOpening = useCallback((roomId:string,type:PlanOpening["type"],side:WallSide) => commitGeometry(current=>{
     const room=(current.rooms ?? []).find(item=>item.id===roomId);if(!room)return current;
     const width=(type==="door"?3:4)*304.8;
@@ -955,7 +984,7 @@ export function PlotProvider({ children }: { children: ReactNode }) {
 
   const addSiteFeature=useCallback((kind:SiteFeatureKind):boolean=>{
     const sizes:Record<SiteFeatureKind,{width:number;height:number;name:string}>={
-      "building-footprint":{width:10000,height:8000,name:"Building footprint"},driveway:{width:3500,height:7000,name:"Driveway"},parking:{width:2700,height:5400,name:"Parking bay"},walkway:{width:1500,height:5000,name:"Walkway"},landscape:{width:5000,height:3000,name:"Landscape area"},tree:{width:1200,height:1200,name:"Tree"},utility:{width:1200,height:1200,name:"Utility point"},easement:{width:5000,height:3000,name:"Easement"},other:{width:3000,height:2000,name:"Site feature"},
+      "building-footprint":{width:10000,height:8000,name:"Building footprint"},driveway:{width:3500,height:7000,name:"Driveway"},parking:{width:2700,height:5400,name:"Parking bay"},walkway:{width:1500,height:5000,name:"Walkway"},landscape:{width:5000,height:3000,name:"Landscape area"},lawn:{width:6000,height:6000,name:"Lawn"},tree:{width:1200,height:1200,name:"Tree"},utility:{width:1200,height:1200,name:"Utility point"},easement:{width:5000,height:3000,name:"Easement"},other:{width:3000,height:2000,name:"Site feature"},
     };
     const size=sizes[kind],current=geometryRef.current;
     const minX=Math.min(...current.corners.map(point=>point.x)),maxX=Math.max(...current.corners.map(point=>point.x)),minY=Math.min(...current.corners.map(point=>point.y)),maxY=Math.max(...current.corners.map(point=>point.y));
@@ -1059,9 +1088,12 @@ export function PlotProvider({ children }: { children: ReactNode }) {
         updateBuildingSize,
         addRoom,
         moveRoom,
+        moveRoomLabel,
         moveFloorPlan,
         resizeRoom,
+        setRoomPoints,
         removeRoom,
+        renameRoom,
         addOpening,
         removeOpening,
         moveOpening,

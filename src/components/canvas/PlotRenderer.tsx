@@ -5,8 +5,8 @@ import { midpoint } from "../../geometry/plot";
 import { useUnits } from "../../geometry/units/UnitContext";
 import { usePlot } from "../../geometry/plot/PlotContext";
 import { rectangularSetback } from "../../geometry/plot/setback";
-import { getRoomWallInset } from "../../geometry/plot/model";
-import type { PlanObject, PlanOpening, Room, SiteFeature, SiteFeatureKind } from "../../geometry/plot/model";
+import { getRoomWallInset, getRoomWallSegments } from "../../geometry/plot/model";
+import type { PlanObject, PlanOpening, Room, SiteFeature, SiteFeatureKind, WallSide } from "../../geometry/plot/model";
 
 interface PlotRendererProps {
   viewport: Viewport;
@@ -23,7 +23,9 @@ interface PlotRendererProps {
   onOpeningPointerDown: (id:string,event:React.PointerEvent<SVGGElement>)=>void;
   onPlanObjectPointerDown:(id:string,event:React.PointerEvent<SVGGElement>)=>void;
   onRoomPointerDown: (id: string, event: React.PointerEvent<SVGRectElement>) => void;
+  onRoomLabelPointerDown:(id:string,event:React.PointerEvent<SVGGElement>)=>void;
   onRoomResizePointerDown: (id: string, corner: number, event: React.PointerEvent<SVGCircleElement>) => void;
+  onRoomEdgeSelect:(id:string,edge:number,event:React.PointerEvent<SVGLineElement>)=>void;
   onSetbackPointerDown:(corner:number,event:React.PointerEvent<SVGGElement>)=>void;
   selectedRoomId: string | null;
 }
@@ -33,7 +35,7 @@ interface PlotRendererProps {
  * The parent <g> has the viewport transform applied, so all
  * coordinates here are canonical world-space millimetres.
  */
-export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, planObjects, siteFeatures, selectedSiteFeatureId, onSiteFeaturePointerDown, onOpeningPointerDown, onPlanObjectPointerDown, onRoomPointerDown, onRoomResizePointerDown, onSetbackPointerDown, selectedRoomId }: PlotRendererProps) {
+export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, planObjects, siteFeatures, selectedSiteFeatureId, onSiteFeaturePointerDown, onOpeningPointerDown, onPlanObjectPointerDown, onRoomPointerDown, onRoomLabelPointerDown, onRoomResizePointerDown, onRoomEdgeSelect, onSetbackPointerDown, selectedRoomId }: PlotRendererProps) {
   const { plot, setbackDistances, selectedEdgeId, selectedCornerId, selectedPropertyCardId, selectEdge, selectCorner } =
     usePlot();
   const { format, unitSystem } = useUnits();
@@ -69,6 +71,7 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
     format: unitSystem === "metric" ? "meters" : "decimal_feet",
     decimals: 1,
   });
+  const wallDimension=(mm:number)=>unitSystem==="metric"?`${format(mm,{format:"millimetres",decimals:0})} wall`:`${(mm/25.4).toFixed(1)} in`;
   const fitRoomLabel=(text:string,width:number,height:number,maxFontPx:number)=>{
     const usableWidth=Math.max(1,width*viewport.zoom-8),usableHeight=Math.max(1,height*viewport.zoom-8),estimatedTextWidth=Math.max(1,text.length)*.62;
     const horizontalSize=usableWidth/estimatedTextWidth,verticalSize=usableHeight/estimatedTextWidth,vertical=verticalSize>horizontalSize;
@@ -113,13 +116,14 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
         points={polygonPoints}
         fill="rgba(59, 130, 246, 0.08)"
         stroke="none"
+        pointerEvents="none"
       />
       {Object.values(setbackDistances).some(distance=>distance>0)&&<polygon points={setbackPoints} fill="rgba(20,184,166,.035)" stroke="#0f766e" strokeWidth={2*invZ} strokeDasharray={`${7*invZ} ${5*invZ}`} strokeLinejoin="round" pointerEvents="none"><title>Independent setbacks from each plot edge</title></polygon>}
 
       {siteFeatures.filter(feature=>feature.visible!==false).map(feature=>{
         const selected=selectedSiteFeatureId===feature.id;
         const palette:Record<SiteFeatureKind,{fill:string;stroke:string}>={
-          "building-footprint":{fill:"#cbd5e1",stroke:"#334155"},driveway:{fill:"#e2e8f0",stroke:"#64748b"},parking:{fill:"#f1f5f9",stroke:"#475569"},walkway:{fill:"#fef3c7",stroke:"#b45309"},landscape:{fill:"#bbf7d0",stroke:"#15803d"},tree:{fill:"#86efac",stroke:"#166534"},utility:{fill:"#bfdbfe",stroke:"#1d4ed8"},easement:{fill:"#e9d5ff",stroke:"#7e22ce"},other:{fill:"#e2e8f0",stroke:"#475569"},
+          "building-footprint":{fill:"#cbd5e1",stroke:"#334155"},driveway:{fill:"#e2e8f0",stroke:"#64748b"},parking:{fill:"#f1f5f9",stroke:"#475569"},walkway:{fill:"#fef3c7",stroke:"#b45309"},landscape:{fill:"#bbf7d0",stroke:"#15803d"},lawn:{fill:"#bbf7d0",stroke:"#15803d"},tree:{fill:"#86efac",stroke:"#166534"},utility:{fill:"#bfdbfe",stroke:"#1d4ed8"},easement:{fill:"#e9d5ff",stroke:"#7e22ce"},other:{fill:"#e2e8f0",stroke:"#475569"},
         };
         const color=palette[feature.kind],removed=feature.status==="removed",dash=feature.status==="proposed"?`${6*invZ} ${4*invZ}`:removed?`${2*invZ} ${3*invZ}`:undefined;
         const common={fill:color.fill,stroke:selected?"#2563eb":removed?"#dc2626":color.stroke,strokeWidth:(selected?3:2)*invZ,strokeDasharray:dash,opacity:removed?.62:1};
@@ -135,21 +139,36 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
 
       {/* ── Edge lines ── */}
       {rooms.map((room,index) => {
-        const left=getRoomWallInset(room,"left",rooms),right=getRoomWallInset(room,"right",rooms),top=getRoomWallInset(room,"top",rooms),bottom=getRoomWallInset(room,"bottom",rooms);
-        const innerWidth=Math.max(0,room.width-left-right),innerHeight=Math.max(0,room.height-top-bottom),centerX=room.x+left+innerWidth/2,centerY=room.y+top+innerHeight/2;
-        const dimensions=`${simpleDimension(innerWidth)} × ${simpleDimension(innerHeight)}`;
-        const nameFit=fitRoomLabel(room.name,innerWidth,innerHeight,12),dimensionFit=fitRoomLabel(dimensions,innerWidth,innerHeight,10);
-        const nameX=centerX+(nameFit.angle? -7*invZ:0),nameY=centerY+(nameFit.angle?0:-7*invZ),dimensionX=centerX+(dimensionFit.angle?9*invZ:0),dimensionY=centerY+(dimensionFit.angle?0:9*invZ);
+        const wallSides:[WallSide,WallSide,WallSide,WallSide]=["left","right","top","bottom"];
+        const wallSegments=wallSides.flatMap(side=>getRoomWallSegments(room,side,rooms));
+        const exteriorWall=Math.max(0,...wallSegments.filter(segment=>!segment.shared).map(segment=>segment.thickness));
+        const sharedWall=Math.max(0,...wallSegments.filter(segment=>segment.shared).map(segment=>segment.thickness));
+        const insetLeft=getRoomWallInset(room,"left",rooms),insetRight=getRoomWallInset(room,"right",rooms),insetTop=getRoomWallInset(room,"top",rooms),insetBottom=getRoomWallInset(room,"bottom",rooms);
+        const clearWidth=Math.max(0,room.width-insetLeft-insetRight),clearHeight=Math.max(0,room.height-insetTop-insetBottom);
+        const clearArea=room.points?null:clearWidth*clearHeight/(unitSystem==="metric"?1_000_000:92_903.04);
+        const centerX=room.x+room.width/2+(room.labelOffset?.x??0),centerY=room.y+room.height/2+(room.labelOffset?.y??0);
+        const vertices=room.points??[{x:room.x,y:room.y},{x:room.x+room.width,y:room.y},{x:room.x+room.width,y:room.y+room.height},{x:room.x,y:room.y+room.height}];
+        const outline=vertices.map(p=>`${p.x},${p.y}`).join(" ");
+        const area=Math.abs(vertices.reduce((sum,p,i)=>{const n=vertices[(i+1)%vertices.length];return sum+p.x*n.y-n.x*p.y;},0))/2;
+        const areaSqFt=(area/92903.04).toFixed(1);
+        const dimensions=`${simpleDimension(room.width)} × ${simpleDimension(room.height)}`;
+        const clearDimensions=`${room.kind==="lawn"?"Area":"Clear"} ${simpleDimension(clearWidth)} × ${simpleDimension(clearHeight)}${clearArea===null?"":` · ${clearArea.toFixed(unitSystem==="metric"?2:1)} ${unitSystem==="metric"?"m²":"sq ft"}`}`;
+        const wallLabel=[exteriorWall?`Ext ${wallDimension(exteriorWall)}`:"",sharedWall?`Shared ${wallDimension(sharedWall)}`:""].filter(Boolean).join(" · ");
+        const nameFit=fitRoomLabel(room.name,room.width,room.height,12),dimensionFit=fitRoomLabel(dimensions,room.width,room.height,10),clearFit=fitRoomLabel(clearDimensions,room.width,room.height,8),wallFit=fitRoomLabel(wallLabel,room.width,room.height,8);
+        const nameX=centerX+(nameFit.angle? -12*invZ:0),nameY=centerY+(nameFit.angle?0:-12*invZ),dimensionX=centerX+(dimensionFit.angle? -3*invZ:0),dimensionY=centerY+(dimensionFit.angle?0:-3*invZ),clearX=centerX+(clearFit.angle?6*invZ:0),clearY=centerY+(clearFit.angle?0:6*invZ),wallX=centerX+(wallFit.angle?15*invZ:0),wallY=centerY+(wallFit.angle?0:15*invZ);
         return <g key={room.id} data-room="true">
-        <rect x={room.x} y={room.y} width={room.width} height={room.height}
-          fill={room.kind==="stairs"?"rgba(245,158,11,.15)":index%2 ? "rgba(14,165,233,.14)" : "rgba(16,185,129,.16)"} stroke={room.kind==="stairs"?"#b45309":index%2 ? "#0369a1" : "#047857"} strokeWidth={2*invZ}
-          style={{cursor:"move"}} onPointerDown={event=>onRoomPointerDown(room.id,event)} onClick={event=>event.stopPropagation()}>
-          <title>{room.name} · Drag to move</title>
-        </rect>
+        {room.points?<polygon points={outline}
+          fill={room.kind==="stairs"?"rgba(245,158,11,.15)":room.kind==="lawn"?"rgba(34,197,94,.2)":index%2 ? "rgba(14,165,233,.14)" : "rgba(16,185,129,.16)"} stroke={room.kind==="stairs"?"#b45309":room.kind==="lawn"?"#15803d":index%2 ? "#0369a1" : "#047857"} strokeWidth={2*invZ}
+          style={{cursor:"move"}} onPointerDown={event=>onRoomPointerDown(room.id,event)} onClick={event=>event.stopPropagation()}><title>{room.name} · {areaSqFt} sq ft · Drag to move</title></polygon>:<rect x={room.x} y={room.y} width={room.width} height={room.height} fill={room.kind==="stairs"?"rgba(245,158,11,.15)":room.kind==="lawn"?"rgba(34,197,94,.2)":index%2 ? "rgba(14,165,233,.14)" : "rgba(16,185,129,.16)"} stroke={room.kind==="stairs"?"#b45309":room.kind==="lawn"?"#15803d":index%2 ? "#0369a1" : "#047857"} strokeWidth={2*invZ} style={{cursor:"move"}} onPointerDown={event=>onRoomPointerDown(room.id,event)} onClick={event=>event.stopPropagation()}><title>{room.name} · {areaSqFt} sq ft · Drag to move</title></rect>}
         {room.kind === "stairs" ? Array.from({length:7},(_,i)=><line key={`step-${i}`} x1={room.x+room.width*.15} x2={room.x+room.width*.85} y1={room.y+room.height*(i+1)/8} y2={room.y+room.height*(i+1)/8} stroke="#b45309" strokeWidth={1*invZ} pointerEvents="none" />) : null}
-        <text x={nameX} y={nameY} transform={nameFit.angle?`rotate(${nameFit.angle} ${nameX} ${nameY})`:undefined} textAnchor="middle" dominantBaseline="middle" fontSize={nameFit.fontSize} fill={room.kind==="stairs"?"#92400e":"#064e3b"} style={{pointerEvents:"none",userSelect:"none"}}>{room.name}</text>
-        <text x={dimensionX} y={dimensionY} transform={dimensionFit.angle?`rotate(${dimensionFit.angle} ${dimensionX} ${dimensionY})`:undefined} textAnchor="middle" dominantBaseline="middle" fontSize={dimensionFit.fontSize} fill="#475569" style={{pointerEvents:"none",userSelect:"none"}}>{dimensions}</text>
-        {selectedRoomId===room.id && [[room.x,room.y],[room.x+room.width,room.y],[room.x+room.width,room.y+room.height],[room.x,room.y+room.height]].map(([cx,cy],corner)=><circle key={corner} cx={cx} cy={cy} r={5*invZ} fill="white" stroke="#047857" strokeWidth={1.5*invZ} style={{cursor:corner%2===0?"nwse-resize":"nesw-resize"}} onPointerDown={event=>onRoomResizePointerDown(room.id,corner,event)} onClick={event=>event.stopPropagation()}><title>Drag to resize {room.name}</title></circle>)}
+        <g onPointerDown={event=>onRoomLabelPointerDown(room.id,event)} style={{cursor:"move",touchAction:"none"}}><title>Drag to reposition this room label</title>
+        <text x={nameX} y={nameY} transform={nameFit.angle?`rotate(${nameFit.angle} ${nameX} ${nameY})`:undefined} textAnchor="middle" dominantBaseline="middle" fontSize={nameFit.fontSize} fill={room.kind==="stairs"?"#92400e":"#064e3b"} style={{pointerEvents:"all",userSelect:"none"}}>{room.name}</text>
+        <text x={dimensionX} y={dimensionY} transform={dimensionFit.angle?`rotate(${dimensionFit.angle} ${dimensionX} ${dimensionY})`:undefined} textAnchor="middle" dominantBaseline="middle" fontSize={dimensionFit.fontSize} fill="#475569" style={{pointerEvents:"all",userSelect:"none"}}>{dimensions}</text>
+        {clearWidth>0&&clearHeight>0&&<text x={clearX} y={clearY} transform={clearFit.angle?`rotate(${clearFit.angle} ${clearX} ${clearY})`:undefined} textAnchor="middle" dominantBaseline="middle" fontSize={clearFit.fontSize} fill="#475569" style={{pointerEvents:"all",userSelect:"none"}}>{clearDimensions}</text>}
+        {wallLabel&&<text x={wallX} y={wallY} transform={wallFit.angle?`rotate(${wallFit.angle} ${wallX} ${wallY})`:undefined} textAnchor="middle" dominantBaseline="middle" fontSize={wallFit.fontSize} fill="#64748b" style={{pointerEvents:"all",userSelect:"none"}}>{wallLabel}</text>}
+        </g>
+        {selectedRoomId===room.id&&vertices.map((a,edge)=>{const b=vertices[(edge+1)%vertices.length];return <line key={`edge-hit-${edge}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={14*invZ} style={{cursor:"copy",pointerEvents:"stroke"}} onPointerDown={event=>{event.stopPropagation();onRoomEdgeSelect(room.id,edge,event);}}><title>Select this edge to add a corner</title></line>;})}
+        {selectedRoomId===room.id && vertices.map(({x:cx,y:cy},corner)=><circle key={corner} cx={cx} cy={cy} r={7*invZ} fill="white" stroke="#047857" strokeWidth={2*invZ} style={{cursor:"move"}} onPointerDown={event=>onRoomResizePointerDown(room.id,corner,event)} onClick={event=>event.stopPropagation()}><title>Drag to reshape {room.name}. Hold Shift to lock to one axis; nearby edges snap into alignment.</title></circle>)}
       </g>;
       })}
       {(["top","right","bottom","left"] as PlotEdgeName[]).map((edgeName,index)=>{
@@ -222,6 +241,7 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
             stroke="transparent"
             strokeWidth={12 * invZ}
             style={{ cursor: "pointer" }}
+            pointerEvents="none"
             onClick={() =>
               selectEdge(edge.id === selectedEdgeId ? null : edge.id)
             }

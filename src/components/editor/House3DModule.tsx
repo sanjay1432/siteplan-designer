@@ -96,9 +96,10 @@ export function House3DModule() {
     modelLevels.forEach((floor,level)=>{
       const levelBase=floor.zBase,levelWallHeight=floor.wallHeight;
       floor.rooms.forEach((room,index)=>{
-        face(`floor-${level}-${room.id}`,[p(room.x,room.y,levelBase),p(room.x+room.width,room.y,levelBase),p(room.x+room.width,room.y+room.height,levelBase),p(room.x,room.y+room.height,levelBase)],FLOOR_COLORS[index%FLOOR_COLORS.length],"#9a8874",.98);
+        face(`floor-${level}-${room.id}`,[p(room.x,room.y,levelBase),p(room.x+room.width,room.y,levelBase),p(room.x+room.width,room.y+room.height,levelBase),p(room.x,room.y+room.height,levelBase)],room.kind==="lawn"?"#86efac":FLOOR_COLORS[index%FLOOR_COLORS.length],"#9a8874",.98);
       });
       floor.rooms.forEach(room=>{
+      if(room.kind==="lawn")return;
       const roomOpenings=floor.openings.filter(item=>item.roomId===room.id);
       const wall=(key:string,side:"top"|"right"|"bottom"|"left",length:number,pointAt:(along:number,z:number)=>Point3)=>{
         const holes=roomOpenings.filter(item=>item.side===side).map(item=>({start:Math.max(0,item.offset),end:Math.min(length,item.offset+item.width),base:item.type==="door"?levelBase:levelBase+levelWallHeight*.42,top:item.type==="door"?levelBase+Math.min(2100,levelWallHeight*.82):levelBase+levelWallHeight*.7})).filter(item=>item.end>item.start).sort((a,b)=>a.start-b.start);

@@ -2,12 +2,12 @@ import type { PlotCorner, PlotEdgeName } from "../../types/plot";
 import type { SurveyCoordinateUnit } from "./surveyCsv";
 
 /** Domain geometry is stored in millimetres and does not depend on the editor or viewport. */
-export type RoomKind = "room" | "stairs";
+export type RoomKind = "room" | "stairs" | "lawn";
 export type WallSide = "top" | "right" | "bottom" | "left";
-export type SiteFeatureKind="building-footprint"|"driveway"|"parking"|"walkway"|"landscape"|"tree"|"utility"|"easement"|"other";
+export type SiteFeatureKind="building-footprint"|"driveway"|"parking"|"walkway"|"landscape"|"lawn"|"tree"|"utility"|"easement"|"other";
 export type SiteFeatureStatus="existing"|"proposed"|"removed";
 export interface SiteFeature { id:string; name:string; kind:SiteFeatureKind; status:SiteFeatureStatus; x:number; y:number; width:number; height:number; visible?:boolean }
-export interface Room { id: string; name: string; x: number; y: number; width: number; height: number; kind?: RoomKind; wallThicknesses?:Partial<Record<WallSide,number>> }
+export interface Room { id: string; name: string; x: number; y: number; width: number; height: number; points?:ProjectPoint[]; kind?: RoomKind; wallThicknesses?:Partial<Record<WallSide,number>>; labelOffset?:ProjectPoint }
 export interface PlanOpening { id:string; roomId:string; type:"door"|"window"; side:WallSide; offset:number; width:number }
 export type PlanObjectKind="dining-table"|"chair"|"vent-window"|"sofa"|"text";
 export interface PlanObject {id:string;kind:PlanObjectKind;x:number;y:number;width:number;height:number;text?:string}
@@ -117,6 +117,7 @@ export const DEFAULT_INTERIOR_WALL_THICKNESS_MM=4.5*25.4;
 export interface RoomWallSegment {start:number;end:number;shared:boolean;thickness:number;attachedRoomIds:string[]}
 
 export function getRoomWallSegments(room:Room,side:WallSide,rooms:Room[]):RoomWallSegment[]{
+  if(room.kind==="lawn")return [];
   const epsilon=1,sideLength=side==="top"||side==="bottom"?room.width:room.height;
   const opposite=({top:"bottom",right:"left",bottom:"top",left:"right"} as Record<WallSide,WallSide>)[side];
   const attached=rooms.flatMap(other=>{
