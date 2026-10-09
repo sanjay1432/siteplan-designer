@@ -128,3 +128,17 @@
     @apply font-sans;
     }
 }
+/* Labels rendered over the 3D model (CSS2DRenderer). */
+.house3d-label {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.82);
+  color: #334155;
+  font: 600 11px/1.4 system-ui, sans-serif;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.12);
+}
+.house3d-label-edge { color: #294632; border: 1px solid #9fb8a4; font-size: 10px; }
+.house3d-label-site { background: rgb(240 253 244 / 0.85); color: #166534; font-size: 10px; }
+.house3d-label-north { background: #dc2626; color: white; font-weight: 700; }
+.house3d-label-stilt { background: rgb(254 243 199 / 0.85); color: #78350f; letter-spacing: 0.06em; text-transform: uppercase; font-size: 10px; }

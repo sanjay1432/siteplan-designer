@@ -1,37 +1,34 @@
-import { useRef, useState } from "react";
-import { Download, FileText, FolderPlus, Pencil, Trash2, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { FolderPlus, MoreHorizontal, Pencil, Redo2, Trash2, Undo2 } from "lucide-react";
 import { usePlot } from "../../geometry/plot/PlotContext";
-import { exportProjectJson, printProjectReport } from "../../lib/sitePlanExport";
 
-export function ProjectControls() {
-  const { projects, activeProjectId, activeProjectName, switchProject, createProject, renameProject, deleteProject, exportProject, importProject, plot, metrics, setbackDistances, compassRotation, floorPlans, groundLevel, measurements, projectDetails, assumptions, issues, surveyMetadata, siteFeatures } = usePlot();
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [notice,setNotice]=useState("");
+export function ProjectControls(){
+  const {projects,activeProjectId,activeProjectName,switchProject,createProject,renameProject,deleteProject,canUndo,canRedo,undo,redo}=usePlot();
+  const [menuOpen,setMenuOpen]=useState(false);
+  const menuRef=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    if(!menuOpen)return;
+    const close=(event:PointerEvent)=>{if(!menuRef.current?.contains(event.target as Node))setMenuOpen(false);};
+    window.addEventListener("pointerdown",close);
+    return ()=>window.removeEventListener("pointerdown",close);
+  },[menuOpen]);
+  const icon="inline-flex size-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-35 disabled:hover:bg-transparent";
 
-  async function importFile(file?:File) {
-    if(!file)return;
-    try {
-      const value:unknown=JSON.parse(await file.text());
-      if(!importProject(value))throw new Error("This file is not a supported SitePlan project.");
-      setNotice("Project imported.");
-    } catch(error) {
-      setNotice(error instanceof Error?error.message:"Could not read this file.");
-    }
-    if(fileRef.current)fileRef.current.value="";
-  }
-
-  return <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+  return <div className="flex min-w-0 items-center gap-1">
     <label className="sr-only" htmlFor="project-picker">Active project</label>
-    <select id="project-picker" value={activeProjectId} onChange={event=>switchProject(event.target.value)} className="max-w-40 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700">
+    <select id="project-picker" value={activeProjectId} onChange={event=>switchProject(event.target.value)} title="Switch project" className="max-w-44 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-800">
       {projects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}
     </select>
-    <button type="button" onClick={createProject} title="Create a new project" className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50"><FolderPlus className="size-3.5"/><span className="hidden sm:inline">New</span></button>
-    <button type="button" onClick={()=>{const next=window.prompt("Project name",activeProjectName);if(next)renameProject(next);}} title="Rename project" className="inline-flex items-center rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-50" aria-label="Rename project"><Pencil className="size-3.5"/></button>
-    <button type="button" onClick={()=>{if(window.confirm(`Delete “${activeProjectName}”?`))deleteProject();}} title="Delete project" className="inline-flex items-center rounded-md border border-slate-200 bg-white p-1.5 text-red-600 hover:bg-red-50" aria-label="Delete project"><Trash2 className="size-3.5"/></button>
-    <button type="button" onClick={()=>exportProjectJson(activeProjectName,exportProject())} title="Download editable project JSON backup" className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1.5 text-xs font-medium text-white hover:bg-blue-700"><Download className="size-3.5"/><span className="hidden sm:inline">Export JSON</span></button>
-    <button type="button" onClick={()=>{const ok=printProjectReport({name:activeProjectName,corners:plot.corners,boundaryEdges:plot.edges.map(edge=>({label:edge.label,lengthMm:edge.actualLengthMm})),metrics,setbacks:setbackDistances,compassRotation,floors:[groundLevel,...floorPlans],measurements,details:projectDetails,assumptions,issues,survey:surveyMetadata,siteFeatures});if(!ok)setNotice("Allow pop-ups to open the report.");}} title="Create a printable project report; save as PDF from the print dialog" className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-800 hover:bg-teal-100"><FileText className="size-3.5"/><span className="hidden sm:inline">Project Report</span></button>
-    <button type="button" onClick={()=>fileRef.current?.click()} title="Import a SitePlan project JSON file" className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50"><Upload className="size-3.5"/><span className="hidden sm:inline">Import</span></button>
-    <input ref={fileRef} type="file" accept=".json,.siteplan.json,application/json" className="hidden" onChange={event=>void importFile(event.target.files?.[0])}/>
-    {notice && <span role="status" className="max-w-48 text-[10px] text-slate-500">{notice}</span>}
+    <button type="button" onClick={createProject} title="New project" aria-label="New project" className={icon}><FolderPlus className="size-4"/></button>
+    <div ref={menuRef} className="relative">
+      <button type="button" onClick={()=>setMenuOpen(value=>!value)} aria-haspopup="menu" aria-expanded={menuOpen} title="Project options" aria-label="Project options" className={icon}><MoreHorizontal className="size-4"/></button>
+      {menuOpen&&<div role="menu" className="absolute left-0 top-8 z-50 w-44 rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
+        <button type="button" role="menuitem" onClick={()=>{setMenuOpen(false);const next=window.prompt("Project name",activeProjectName);if(next?.trim())renameProject(next.trim());}} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-50"><Pencil className="size-3.5"/>Rename project</button>
+        <button type="button" role="menuitem" onClick={()=>{setMenuOpen(false);if(window.confirm(`Delete “${activeProjectName}”? This cannot be undone.`))deleteProject();}} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-red-600 hover:bg-red-50"><Trash2 className="size-3.5"/>Delete project</button>
+      </div>}
+    </div>
+    <span className="mx-1 h-4 w-px bg-slate-200"/>
+    <button type="button" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)" aria-label="Undo" className={icon}><Undo2 className="size-4"/></button>
+    <button type="button" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)" aria-label="Redo" className={icon}><Redo2 className="size-4"/></button>
   </div>;
 }

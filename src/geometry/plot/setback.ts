@@ -12,6 +12,15 @@ export function offsetPolygonInward(points:PlanPoint[],distance:number):PlanPoin
   return offsetPolygonInwardByEdgeDistances(points,points.map(()=>distance));
 }
 
+/** Unit normal of edge `index` (from point index to index+1) pointing into the polygon. */
+export function edgeInwardNormal(points:PlanPoint[],index:number):PlanPoint{
+  const origin=points[0];
+  const area=points.reduce((sum,p,i)=>{const next=points[(i+1)%points.length];return sum+(p.x-origin.x)*(next.y-origin.y)-(next.x-origin.x)*(p.y-origin.y);},0);
+  const direction=area>=0?1:-1,start=points[index],end=points[(index+1)%points.length];
+  const dx=end.x-start.x,dy=end.y-start.y,length=Math.hypot(dx,dy)||1;
+  return {x:-direction*dy/length,y:direction*dx/length};
+}
+
 /** Offset each polygon edge inward by its own perpendicular distance. */
 export function offsetPolygonInwardByEdgeDistances(points:PlanPoint[],distances:number[]):PlanPoint[]{
   if(points.length<3||distances.every(distance=>distance<=0))return points;

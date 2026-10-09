@@ -3,60 +3,12 @@ import {
   type Viewport,
 } from "../../geometry/viewport";
 import { useUnits } from "../../geometry/units/UnitContext";
+import { getGridStep } from "../../geometry/grid";
 
 interface GridProps {
   viewport: Viewport;
   width: number;
   height: number;
-}
-
-const IMPERIAL_CANDIDATES = [
-  25.4,       // 1 inch
-  76.2,       // 3 inch
-  152.4,      // 6 inch
-  304.8,      // 1 ft
-  609.6,      // 2 ft
-  1524,       // 5 ft
-  3048,       // 10 ft
-  6096,       // 20 ft
-  15240,      // 50 ft
-  30480,      // 100 ft
-  60960,      // 200 ft
-  152400,     // 500 ft
-];
-
-const METRIC_CANDIDATES = [
-  10,         // 10 mm
-  20,         // 20 mm
-  50,         // 50 mm
-  100,        // 100 mm (10 cm)
-  200,        // 200 mm
-  500,        // 500 mm (0.5 m)
-  1000,       // 1 m
-  2000,       // 2 m
-  5000,       // 5 m
-  10000,      // 10 m
-  20000,      // 20 m
-  50000,      // 50 m
-  100000,     // 100 m
-];
-
-function getGridStep(
-  zoom: number,
-  unitSystem: "imperial" | "metric",
-): number {
-  const candidates =
-    unitSystem === "metric" ? METRIC_CANDIDATES : IMPERIAL_CANDIDATES;
-
-  const minimumScreenSpacing = 30;
-
-  for (const candidate of candidates) {
-    if (candidate * zoom >= minimumScreenSpacing) {
-      return candidate;
-    }
-  }
-
-  return candidates[candidates.length - 1];
 }
 
 export function Grid({
@@ -150,8 +102,8 @@ export function Grid({
 
       {/* Grid spacing label */}
       <text
-        x={startX + 8 / viewport.zoom}
-        y={startY + 18 / viewport.zoom}
+        x={worldLeft + 8 / viewport.zoom}
+        y={worldTop + 14 / viewport.zoom}
         fontSize={12 / viewport.zoom}
         fill="#64748b"
         fontFamily="monospace"

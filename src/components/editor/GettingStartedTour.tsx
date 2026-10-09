@@ -7,32 +7,32 @@ const steps = [
   {
     icon: Home,
     title: "Start with your plot",
-    body: "Set the length of each plot side in Plot Properties, or drag a corner on the drawing. The blue outline is your land boundary.",
-    tip: "You can change feet or meters from the top bar.",
+    body: "The blue outline is your land. In the Plot tab, type each side's length and setback, or drag a corner on the drawing (it snaps to the grid; hold Alt to place freely).",
+    tip: "Switch between feet, metres and millimetres from the top bar.",
   },
   {
     icon: Home,
     title: "Add a floor plan",
-    body: "In Floor Plan, choose a 1, 2, or 3 BHK starter layout, enter a target area, or add rooms one at a time. You can rename rooms and change their size.",
-    tip: "Try a starter layout first; you can edit every room afterward.",
+    body: "In the Building tab, pick a 1, 2 or 3 BHK layout to start, or add rooms one at a time. Click a room to rename it, change its size, and add doors and windows.",
+    tip: "Start from a layout; you can change every room afterwards.",
   },
   {
     icon: Move,
     title: "Arrange the rooms",
-    body: "Drag a room to move it. Select a room to show its corner handles, then drag a handle to resize it. Use X only or Y only to keep movement straight, or Whole plan to move everything together.",
-    tip: "The area left inside the plot updates as you arrange the plan.",
+    body: "Drag a room to move it. Select a room to show its corner handles, then drag a handle to resize. Hold Shift while dragging to keep a room in a straight line, or turn on Move all to shift the whole floor.",
+    tip: "A room that crosses the setback line is outlined in red.",
   },
   {
     icon: Ruler,
-    title: "Add details and measurements",
-    body: "Use + Door and + Window in a room to mark openings. Choose Measure, then click two points on the drawing to see the distance. Rotate the compass or reset it to north with Reset N.",
-    tip: "Use Undo line or Clear lines to remove measurements.",
+    title: "Measure and orient",
+    body: "Choose Measure, then click two points on the drawing to see the distance. Use the compass arrows at the top right to rotate north.",
+    tip: "Select a measurement and press Delete to remove it.",
   },
   {
     icon: Save,
     title: "Save and share your work",
-    body: "Your projects save automatically in this browser. Export / Import in the top bar keeps an editable project backup. Export plan on the drawing saves an image, SVG, or printable PDF.",
-    tip: "Export a JSON backup if you may clear browser data or switch devices.",
+    body: "Projects save automatically in this browser. Use Export in the top bar for a project report (PDF), a plan image, or an editable JSON backup you can import later.",
+    tip: "Keep a JSON backup if you may clear browser data or switch devices.",
   },
 ];
 

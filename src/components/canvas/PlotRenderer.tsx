@@ -1,10 +1,10 @@
 import type { PlotCorner, PlotEdge } from "../../types/plot";
 import type { Viewport } from "../../geometry/viewport";
-import type { PlotEdgeName } from "../../types/plot";
 import { midpoint } from "../../geometry/plot";
 import { useUnits } from "../../geometry/units/UnitContext";
 import { usePlot } from "../../geometry/plot/PlotContext";
-import { rectangularSetback } from "../../geometry/plot/setback";
+import { edgeInwardNormal } from "../../geometry/plot/setback";
+import { interiorAngles } from "../../geometry/plot/boundary";
 import { getRoomWallInset, getRoomWallSegments } from "../../geometry/plot/model";
 import type { PlanObject, PlanOpening, Room, SiteFeature, SiteFeatureKind, WallSide } from "../../geometry/plot/model";
 
@@ -22,11 +22,11 @@ interface PlotRendererProps {
   onSiteFeaturePointerDown:(id:string,event:React.PointerEvent<SVGGElement>)=>void;
   onOpeningPointerDown: (id:string,event:React.PointerEvent<SVGGElement>)=>void;
   onPlanObjectPointerDown:(id:string,event:React.PointerEvent<SVGGElement>)=>void;
-  onRoomPointerDown: (id: string, event: React.PointerEvent<SVGRectElement>) => void;
+  onRoomPointerDown: (id: string, event: React.PointerEvent<SVGElement>) => void;
   onRoomLabelPointerDown:(id:string,event:React.PointerEvent<SVGGElement>)=>void;
   onRoomResizePointerDown: (id: string, corner: number, event: React.PointerEvent<SVGCircleElement>) => void;
   onRoomEdgeSelect:(id:string,edge:number,event:React.PointerEvent<SVGLineElement>)=>void;
-  onSetbackPointerDown:(corner:number,event:React.PointerEvent<SVGGElement>)=>void;
+  onSetbackPointerDown:(edgeIndex:number,event:React.PointerEvent<SVGGElement>)=>void;
   selectedRoomId: string | null;
 }
 
@@ -36,7 +36,7 @@ interface PlotRendererProps {
  * coordinates here are canonical world-space millimetres.
  */
 export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, planObjects, siteFeatures, selectedSiteFeatureId, onSiteFeaturePointerDown, onOpeningPointerDown, onPlanObjectPointerDown, onRoomPointerDown, onRoomLabelPointerDown, onRoomResizePointerDown, onRoomEdgeSelect, onSetbackPointerDown, selectedRoomId }: PlotRendererProps) {
-  const { plot, setbackDistances, selectedEdgeId, selectedCornerId, selectedPropertyCardId, selectEdge, selectCorner } =
+  const { plot, setbackDistances, buildableCorners, roomsOutsideSetback, selectedEdgeId, selectedCornerId, selectedPropertyCardId, selectEdge, selectCorner } =
     usePlot();
   const { format, unitSystem } = useUnits();
 
@@ -53,9 +53,10 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
   const polygonPoints = corners
     .map((c) => `${c.x},${c.y}`)
     .join(" ");
-  const insetCorners=rectangularSetback(corners,setbackDistances);
+  const insetCorners=buildableCorners;
   const setbackPoints=insetCorners.map(point=>`${point.x},${point.y}`).join(" ");
-  const signedArea=corners.reduce((sum,point,index)=>{const next=corners[(index+1)%corners.length];return sum+(point.x-corners[0].x)*(next.y-corners[0].y)-(next.x-corners[0].x)*(point.y-corners[0].y);},0)/2;
+  const hasSetback=setbackDistances.some(distance=>distance>0);
+  const angles=interiorAngles(corners);
 
   // Inverse-scale helpers to keep labels/markers constant screen size
   const invZ = 1 / viewport.zoom;
@@ -118,7 +119,7 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
         stroke="none"
         pointerEvents="none"
       />
-      {Object.values(setbackDistances).some(distance=>distance>0)&&<polygon points={setbackPoints} fill="rgba(20,184,166,.035)" stroke="#0f766e" strokeWidth={2*invZ} strokeDasharray={`${7*invZ} ${5*invZ}`} strokeLinejoin="round" pointerEvents="none"><title>Independent setbacks from each plot edge</title></polygon>}
+      {hasSetback&&<polygon points={setbackPoints} fill="rgba(20,184,166,.035)" stroke="#0f766e" strokeWidth={2*invZ} strokeDasharray={`${7*invZ} ${5*invZ}`} strokeLinejoin="round" pointerEvents="none"><title>Independent setbacks from each plot edge</title></polygon>}
 
       {siteFeatures.filter(feature=>feature.visible!==false).map(feature=>{
         const selected=selectedSiteFeatureId===feature.id;
@@ -154,12 +155,14 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
         const dimensions=`${simpleDimension(room.width)} × ${simpleDimension(room.height)}`;
         const clearDimensions=`${room.kind==="lawn"?"Area":"Clear"} ${simpleDimension(clearWidth)} × ${simpleDimension(clearHeight)}${clearArea===null?"":` · ${clearArea.toFixed(unitSystem==="metric"?2:1)} ${unitSystem==="metric"?"m²":"sq ft"}`}`;
         const wallLabel=[exteriorWall?`Ext ${wallDimension(exteriorWall)}`:"",sharedWall?`Shared ${wallDimension(sharedWall)}`:""].filter(Boolean).join(" · ");
+        const violatesSetback=roomsOutsideSetback.includes(room.id);
         const nameFit=fitRoomLabel(room.name,room.width,room.height,12),dimensionFit=fitRoomLabel(dimensions,room.width,room.height,10),clearFit=fitRoomLabel(clearDimensions,room.width,room.height,8),wallFit=fitRoomLabel(wallLabel,room.width,room.height,8);
         const nameX=centerX+(nameFit.angle? -12*invZ:0),nameY=centerY+(nameFit.angle?0:-12*invZ),dimensionX=centerX+(dimensionFit.angle? -3*invZ:0),dimensionY=centerY+(dimensionFit.angle?0:-3*invZ),clearX=centerX+(clearFit.angle?6*invZ:0),clearY=centerY+(clearFit.angle?0:6*invZ),wallX=centerX+(wallFit.angle?15*invZ:0),wallY=centerY+(wallFit.angle?0:15*invZ);
         return <g key={room.id} data-room="true">
         {room.points?<polygon points={outline}
           fill={room.kind==="stairs"?"rgba(245,158,11,.15)":room.kind==="lawn"?"rgba(34,197,94,.2)":index%2 ? "rgba(14,165,233,.14)" : "rgba(16,185,129,.16)"} stroke={room.kind==="stairs"?"#b45309":room.kind==="lawn"?"#15803d":index%2 ? "#0369a1" : "#047857"} strokeWidth={2*invZ}
           style={{cursor:"move"}} onPointerDown={event=>onRoomPointerDown(room.id,event)} onClick={event=>event.stopPropagation()}><title>{room.name} · {areaSqFt} sq ft · Drag to move</title></polygon>:<rect x={room.x} y={room.y} width={room.width} height={room.height} fill={room.kind==="stairs"?"rgba(245,158,11,.15)":room.kind==="lawn"?"rgba(34,197,94,.2)":index%2 ? "rgba(14,165,233,.14)" : "rgba(16,185,129,.16)"} stroke={room.kind==="stairs"?"#b45309":room.kind==="lawn"?"#15803d":index%2 ? "#0369a1" : "#047857"} strokeWidth={2*invZ} style={{cursor:"move"}} onPointerDown={event=>onRoomPointerDown(room.id,event)} onClick={event=>event.stopPropagation()}><title>{room.name} · {areaSqFt} sq ft · Drag to move</title></rect>}
+        {violatesSetback&&<rect x={room.x} y={room.y} width={room.width} height={room.height} fill="none" stroke="#dc2626" strokeWidth={2.5*invZ} strokeDasharray={`${5*invZ} ${3*invZ}`} pointerEvents="none"><title>{room.name} extends past the setback line</title></rect>}
         {room.kind === "stairs" ? Array.from({length:7},(_,i)=><line key={`step-${i}`} x1={room.x+room.width*.15} x2={room.x+room.width*.85} y1={room.y+room.height*(i+1)/8} y2={room.y+room.height*(i+1)/8} stroke="#b45309" strokeWidth={1*invZ} pointerEvents="none" />) : null}
         <g onPointerDown={event=>onRoomLabelPointerDown(room.id,event)} style={{cursor:"move",touchAction:"none"}}><title>Drag to reposition this room label</title>
         <text x={nameX} y={nameY} transform={nameFit.angle?`rotate(${nameFit.angle} ${nameX} ${nameY})`:undefined} textAnchor="middle" dominantBaseline="middle" fontSize={nameFit.fontSize} fill={room.kind==="stairs"?"#92400e":"#064e3b"} style={{pointerEvents:"all",userSelect:"none"}}>{room.name}</text>
@@ -171,18 +174,18 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
         {selectedRoomId===room.id && vertices.map(({x:cx,y:cy},corner)=><circle key={corner} cx={cx} cy={cy} r={7*invZ} fill="white" stroke="#047857" strokeWidth={2*invZ} style={{cursor:"move"}} onPointerDown={event=>onRoomResizePointerDown(room.id,corner,event)} onClick={event=>event.stopPropagation()}><title>Drag to reshape {room.name}. Hold Shift to lock to one axis; nearby edges snap into alignment.</title></circle>)}
       </g>;
       })}
-      {(["top","right","bottom","left"] as PlotEdgeName[]).map((edgeName,index)=>{
-        if(index>=corners.length||!setbackDistances[edgeName])return null;
-        const start=corners[index],end=corners[(index+1)%corners.length],dx=end.x-start.x,dy=end.y-start.y,length=Math.hypot(dx,dy)||1;
-        const direction=signedArea>=0?1:-1,nx=-dy/length*direction,ny=dx/length*direction;
+      {corners.map((start,index)=>{
+        const distance=setbackDistances[index]??0;
+        if(!distance)return null;
+        const end=corners[(index+1)%corners.length],normal=edgeInwardNormal(corners,index);
         const outerMid={x:(start.x+end.x)/2,y:(start.y+end.y)/2};
-        const innerMid={x:outerMid.x+nx*setbackDistances[edgeName],y:outerMid.y+ny*setbackDistances[edgeName]};
+        const innerMid={x:outerMid.x+normal.x*distance,y:outerMid.y+normal.y*distance};
         const labelX=(outerMid.x+innerMid.x)/2,labelY=(outerMid.y+innerMid.y)/2;
         let angle=Math.atan2(innerMid.y-outerMid.y,innerMid.x-outerMid.x)*180/Math.PI;
         if(angle>90||angle< -90)angle+=180;
         return <g key={`setback-dimension-${index}`} pointerEvents="none">
           <line x1={outerMid.x} y1={outerMid.y} x2={innerMid.x} y2={innerMid.y} stroke="#0f766e" strokeWidth={1.25*invZ}/>
-          <text x={labelX} y={labelY} transform={`rotate(${angle} ${labelX} ${labelY})`} textAnchor="middle" dominantBaseline="middle" fontSize={9*invZ} fontWeight="700" fill="#115e59" paintOrder="stroke" stroke="white" strokeWidth={3*invZ} strokeLinejoin="round">{format(setbackDistances[edgeName])}</text>
+          <text x={labelX} y={labelY} transform={`rotate(${angle} ${labelX} ${labelY})`} textAnchor="middle" dominantBaseline="middle" fontSize={9*invZ} fontWeight="700" fill="#115e59" paintOrder="stroke" stroke="white" strokeWidth={3*invZ} strokeLinejoin="round">{format(distance)}</text>
         </g>;
       })}
       {openings.map(opening=>{
@@ -362,24 +365,25 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
         );
       })}
       {insetCorners.map((corner,index)=>{
-        const edge=(['top','right','bottom','left'] as PlotEdgeName[])[index],selected=selectedPropertyCardId===`setback-${edge}`;
-        return <g key={`setback-handle-${edge}`} style={{cursor:"nwse-resize",touchAction:"none"}} onPointerDown={event=>onSetbackPointerDown(index,event)}>
-          <circle cx={corner.x} cy={corner.y} r={14*invZ} fill="transparent" pointerEvents="all" />
-          <circle cx={corner.x} cy={corner.y} r={6*invZ} fill={selected?"#0f766e":"white"} stroke="#0f766e" strokeWidth={2*invZ} pointerEvents="none" />
-          <title>Drag this corner inward to reduce the setback rectangle, or outward to enlarge it</title>
+        const next=insetCorners[(index+1)%insetCorners.length],x=(corner.x+next.x)/2,y=(corner.y+next.y)/2,normal=edgeInwardNormal(corners,index);
+        const selected=selectedPropertyCardId===`setback-${index}`,cursor=Math.abs(normal.x)>Math.abs(normal.y)?"ew-resize":"ns-resize";
+        return <g key={`setback-handle-${corners[index].id}`} style={{cursor,touchAction:"none"}} onPointerDown={event=>onSetbackPointerDown(index,event)}>
+          <circle cx={x} cy={y} r={12*invZ} fill="transparent" pointerEvents="all" />
+          <rect x={x-5*invZ} y={y-5*invZ} width={10*invZ} height={10*invZ} rx={2*invZ} transform={`rotate(45 ${x} ${y})`} fill={selected?"#0f766e":"white"} stroke="#0f766e" strokeWidth={1.75*invZ} pointerEvents="none" />
+          <title>Drag to set this edge's setback</title>
         </g>;
       })}
 
       {/* ── Corner coordinate labels (show when selected) ── */}
-      {corners.map((corner) => {
+      {corners.map((corner, cornerIndex) => {
         if (corner.id !== selectedCornerId) return null;
         return (
           <g key={`coord-${corner.id}`}>
             <rect
               x={corner.x + 8 * invZ}
               y={corner.y - 26 * invZ}
-              width={80 * invZ}
-              height={22 * invZ}
+              width={Math.max(80, (format(corner.x).length + format(corner.y).length) * 6.2 + 24) * invZ}
+              height={34 * invZ}
               rx={3 * invZ}
               fill="white"
               fillOpacity={0.95}
@@ -395,6 +399,16 @@ export function PlotRenderer({ viewport, onCornerPointerDown, rooms, openings, p
               style={{ userSelect: "none" }}
             >
               {format(corner.x)}, {format(corner.y)}
+            </text>
+            <text
+              x={corner.x + 10 * invZ}
+              y={corner.y + 0 * invZ}
+              fontSize={smallFontSize * 0.85}
+              fontFamily="monospace"
+              fill="#1e3a5f"
+              style={{ userSelect: "none" }}
+            >
+              ∠ {angles[cornerIndex].toFixed(2)}°
             </text>
           </g>
         );

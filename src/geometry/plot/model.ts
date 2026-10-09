@@ -16,7 +16,7 @@ export type FloorPlanPreset = "1bhk" | "2bhk" | "3bhk";
 export interface ProjectPoint {x:number;y:number}
 export interface MeasurementLine { start:ProjectPoint; end:ProjectPoint }
 export interface SurveyMetadata { sourceFile:string; coordinateReference:string; coordinateUnit:SurveyCoordinateUnit; originX:number; originY:number; sourcePoints:Array<{name:string;x:number;y:number}>; importedAt:string; designBoundaryEditedAt?:string }
-export interface PlotGeometry { corners:PlotCorner[]; building?:{x:number;y:number;width:number;height:number}; setbackMm?:number; setbacks?:Partial<Record<PlotEdgeName,number>>; survey?:SurveyMetadata; siteFeatures?:SiteFeature[]; rooms?:Room[]; openings?:PlanOpening[]; groundPlan?:FloorPlanLevel; floors?:FloorPlanLevel[]; activeFloorId?:string }
+export interface PlotGeometry { corners:PlotCorner[]; building?:{x:number;y:number;width:number;height:number}; setbackMm?:number; setbacks?:Partial<Record<PlotEdgeName,number>>; edgeSetbacks?:Record<string,number>; survey?:SurveyMetadata; siteFeatures?:SiteFeature[]; rooms?:Room[]; openings?:PlanOpening[]; groundPlan?:FloorPlanLevel; floors?:FloorPlanLevel[]; activeFloorId?:string }
 export interface ProjectDetails { clientName:string; siteAddress:string; projectNumber:string; preparedBy:string; revision:string; notes:string }
 export interface ProjectAssumption {id:string;description:string;status:"assumed"|"confirmed";source?:string}
 export interface ProjectIssue {id:string;revision:string;date:string;author:string;description:string}
@@ -59,7 +59,7 @@ export interface ProjectDocumentV2 {
     assumptions?:ProjectAssumption[];
     issues?:ProjectIssue[];
     compassRotation:number;
-    site:{boundary:PlotCorner[];setbackMm?:number;setbacks?:Partial<Record<PlotEdgeName,number>>;survey?:SurveyMetadata;features?:SiteFeature[]};
+    site:{boundary:PlotCorner[];setbackMm?:number;setbacks?:Partial<Record<PlotEdgeName,number>>;edgeSetbacks?:Record<string,number>;survey?:SurveyMetadata;features?:SiteFeature[]};
     buildings:Array<{id:string;name:string;levels:FloorPlanLevel[];activeLevelId:string;envelope?:{x:number;y:number;width:number;height:number}}>;
     measurements:MeasurementLine[];
   };
@@ -81,7 +81,7 @@ export function createProjectDocument(project:SavedProject):ProjectDocumentV2{
   const {geometry}=project,{levels,activeLevelId}=levelsFromGeometry(geometry);
   return {documentType:"siteplan-designer-project-document",schemaVersion:2,units:"mm",project:{
     id:project.id,name:project.name,details:project.details,assumptions:project.assumptions,issues:project.issues,compassRotation:project.compassRotation,
-    site:{boundary:geometry.corners,setbackMm:geometry.setbackMm,setbacks:geometry.setbacks,survey:geometry.survey,features:geometry.siteFeatures},
+    site:{boundary:geometry.corners,setbackMm:geometry.setbackMm,setbacks:geometry.setbacks,edgeSetbacks:geometry.edgeSetbacks,survey:geometry.survey,features:geometry.siteFeatures},
     buildings:[{id:"building-primary",name:"Primary building",levels,activeLevelId,...(geometry.building?{envelope:geometry.building}:{})}],
     measurements:project.measurements,
   }};
@@ -91,7 +91,7 @@ export function savedProjectFromDocumentV2(document:ProjectDocumentV2):SavedProj
   const project=document.project,building=project.buildings[0],groundPlan=building.levels.find(level=>level.id==="ground")??{id:"ground",name:"Ground · Stilt parking",rooms:[],openings:[]};
   const floors=building.levels.filter(level=>level.id!==groundPlan.id),activeLevelId=building.activeLevelId;
   const active=activeLevelId===groundPlan.id?groundPlan:floors.find(level=>level.id===activeLevelId)??floors[0]??groundPlan;
-  const geometry:PlotGeometry={corners:project.site.boundary,setbackMm:project.site.setbackMm,setbacks:project.site.setbacks,survey:project.site.survey,siteFeatures:project.site.features,building:building.envelope,groundPlan,floors,activeFloorId:active.id,rooms:active.rooms,openings:active.openings};
+  const geometry:PlotGeometry={corners:project.site.boundary,setbackMm:project.site.setbackMm,setbacks:project.site.setbacks,edgeSetbacks:project.site.edgeSetbacks,survey:project.site.survey,siteFeatures:project.site.features,building:building.envelope,groundPlan,floors,activeFloorId:active.id,rooms:active.rooms,openings:active.openings};
   return {id:project.id,name:project.name,details:project.details,assumptions:project.assumptions,issues:project.issues,compassRotation:project.compassRotation,geometry,measurements:project.measurements};
 }
 
@@ -109,6 +109,30 @@ export function isProjectDocumentV1(value:unknown):value is ProjectDocumentV1{
   if(!value||typeof value!=="object")return false;
   const document=value as Record<string,unknown>;
   return document.documentType==="siteplan-designer-project-document"&&document.schemaVersion===1&&document.units==="mm"&&!!document.project&&typeof document.project==="object";
+}
+
+const LEGACY_SETBACK_EDGES:PlotEdgeName[]=["top","right","bottom","left"];
+
+/**
+ * Setback distance for every boundary edge, in boundary order. Edge i runs from
+ * corner i to corner i+1 and is keyed by its start corner id, so setbacks survive
+ * splitting or removing other points. Older projects stored four named values
+ * (top/right/bottom/left) for the first four edges plus an optional uniform value.
+ */
+export function resolveEdgeSetbacks(geometry:Pick<PlotGeometry,"corners"|"setbackMm"|"setbacks"|"edgeSetbacks">):number[]{
+  const uniform=Math.max(0,geometry.setbackMm??0);
+  return geometry.corners.map((corner,index)=>{
+    const keyed=geometry.edgeSetbacks?.[corner.id];
+    if(keyed!==undefined)return Math.max(0,keyed);
+    if(geometry.edgeSetbacks)return 0;
+    const legacy=index<4?geometry.setbacks?.[LEGACY_SETBACK_EDGES[index]]:undefined;
+    return Math.max(0,legacy??uniform);
+  });
+}
+
+/** Build the persisted per-edge setback map from distances in boundary order. */
+export function edgeSetbackRecord(corners:PlotCorner[],distances:number[]):Record<string,number>{
+  return Object.fromEntries(corners.map((corner,index)=>[corner.id,Math.max(0,distances[index]??0)]));
 }
 
 export const DEFAULT_EXTERIOR_WALL_THICKNESS_MM=9*25.4;

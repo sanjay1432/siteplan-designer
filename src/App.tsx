@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { ArrowRight, Check, ChevronRight, CircleHelp, DraftingCompass, Layers3, Mail, Ruler, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, Check, ChevronRight, CircleHelp, DraftingCompass, Layers3, Mail, Ruler, ShieldCheck } from "lucide-react";
 import { SitePlanEditor } from "./components/editor/SitePlanEditor";
 import "./App.css";
 
@@ -7,7 +7,7 @@ const features = [
   { icon: Ruler, title: "Parcel boundaries", text: "Edit an edge length or drag its corner. Split or remove points, or import ordered survey points from CSV in feet, metres, or millimetres." },
   { icon: Layers3, title: "Setbacks and site features", text: "Set a setback for each parcel edge. Add, size, move, and label features such as buildings, parking, paths, trees, utilities, and easements." },
   { icon: DraftingCompass, title: "Rooms and floor plans", text: "Start with a 1, 2, or 3 BHK layout, or add rooms yourself. Arrange rooms, add doors and windows, and create multiple floors." },
-  { icon: ShieldCheck, title: "3D view and project reports", text: "View the room layout in the 3D module. Export an editable JSON backup or print a project report and save it as PDF." },
+  { icon: ShieldCheck, title: "3D view and project reports", text: "Orbit an interactive 3D model of the site, setbacks and every floor, with walls, doors and windows. Export an editable JSON backup or print a project report and save it as PDF." },
 ];
 const steps = [
   { number: "01", title: "Define the parcel", text: "In Site Properties, edit a side length or drag a corner. To import a survey, choose a CSV with ordered X/Y or Easting/Northing points." },
